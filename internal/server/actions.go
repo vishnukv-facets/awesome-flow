@@ -88,11 +88,16 @@ func (s *Server) handleAction(w http.ResponseWriter, r *http.Request) {
 func (s *Server) runAction(req actionRequest) (actionResponse, int) {
 	target := firstNonEmpty(req.Target, req.Slug)
 	switch req.Kind {
-	case "spawn", "resume", "attach":
+	case "spawn":
 		if err := validateSlug(target); err != nil {
 			return actionResponse{OK: false, Message: err.Error()}, http.StatusBadRequest
 		}
-		return s.openBrowserTerminalBridge(target)
+		return s.openBrowserTerminalBridge(target, req.Provider)
+	case "resume", "attach":
+		if err := validateSlug(target); err != nil {
+			return actionResponse{OK: false, Message: err.Error()}, http.StatusBadRequest
+		}
+		return s.openBrowserTerminalBridge(target, "")
 	case "iterm", "terminal", "warp", "kitty", "alacritty", "ghostty", "wezterm", "tmux", "vscode":
 		if err := validateSlug(target); err != nil {
 			return actionResponse{OK: false, Message: err.Error()}, http.StatusBadRequest
@@ -379,7 +384,13 @@ func (s *Server) ackApproval(kind, target string) (actionResponse, int) {
 	}, http.StatusOK
 }
 
-func (s *Server) openBrowserTerminalBridge(target string) (actionResponse, int) {
+func (s *Server) openBrowserTerminalBridge(target, providerChoice string) (actionResponse, int) {
+	if err := s.applyBacklogProviderChoice(target, providerChoice); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return actionResponse{OK: false, Message: "task not found: " + target}, http.StatusNotFound
+		}
+		return actionResponse{OK: false, Message: err.Error()}, http.StatusBadRequest
+	}
 	agent, err := s.agentForTask(target)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
@@ -397,6 +408,37 @@ func (s *Server) openBrowserTerminalBridge(target string) (actionResponse, int) 
 		Agent:   agent,
 		Bridge:  true,
 	}, http.StatusOK
+}
+
+func (s *Server) applyBacklogProviderChoice(target, rawProvider string) error {
+	if strings.TrimSpace(rawProvider) == "" {
+		return nil
+	}
+	provider, err := s.availableProvider(rawProvider)
+	if err != nil {
+		return err
+	}
+	task, err := flowdb.GetTask(s.cfg.DB, target)
+	if err != nil {
+		return err
+	}
+	currentProvider := strings.TrimSpace(task.SessionProvider)
+	if currentProvider == "" {
+		currentProvider = "claude"
+	}
+	if task.Status != "backlog" || task.SessionID.Valid || task.SessionStarted.Valid {
+		if currentProvider == provider {
+			return nil
+		}
+		return fmt.Errorf("provider can only be changed before a session starts")
+	}
+	now := flowdb.NowISO()
+	_, err = s.cfg.DB.Exec(
+		`UPDATE tasks SET session_provider = ?, updated_at = ?
+		 WHERE slug = ? AND status = 'backlog' AND session_id IS NULL AND session_started IS NULL`,
+		provider, now, target,
+	)
+	return err
 }
 
 func (s *Server) spawnPlaybookRunBridge(target string, req actionRequest) (actionResponse, int) {

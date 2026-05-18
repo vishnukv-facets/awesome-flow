@@ -67,6 +67,7 @@ type TaskView struct {
 	Kind                string        `json:"kind"`
 	PlaybookSlug        *string       `json:"playbook_slug"`
 	ParentSlug          *string       `json:"parent_slug"`
+	Parent              *TaskSummary  `json:"parent,omitempty"`
 	Children            []TaskSummary `json:"children,omitempty"`
 	Priority            string        `json:"priority"`
 	WorkDir             string        `json:"work_dir"`

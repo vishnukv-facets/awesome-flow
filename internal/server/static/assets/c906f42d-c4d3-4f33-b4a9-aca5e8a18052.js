@@ -4,7 +4,7 @@ const {
   SAMPLE_TRANSCRIPT, TERMINAL_SAMPLES, SAMPLE_DIFF_FILES,
   formatAge, formatActivity, fmtTokens, shortUUID, rerenderIcons,
   Icon, FlowMark, FlowLogo, SkeletonRows, StatusPill, TaskStatePill, PriorityPill, AgentChip, ProviderMark, BranchChip, Dot, PixelIndicator, Sparkline,
-  AgentTile, TranscriptView, ActivityHeatmap, FocusDrawer, ClockProvider, ClockCtx,
+  DependencyBadges, AgentTile, TranscriptView, ActivityHeatmap, FocusDrawer, ClockProvider, ClockCtx,
 } = window.MC;
 
 const capabilityList = (group) => {
@@ -117,22 +117,25 @@ const MissionControl = ({ focus, setFocus, action, sort, setSort, goto }) => {
       </div>
       <div className="ribbon">
         {BACKLOG.length ? BACKLOG.map(b => {
-          const provider = b.provider || 'claude';
-          const available = isCapabilityAvailable('providers', provider);
+          const available = anyProviderAvailable();
           return (
             <div
               key={b.slug}
               className={`ribbon-chip ${available ? '' : 'disabled'}`}
-              title={available ? '' : capabilityReason('providers', provider)}
+              title={available ? 'Choose Claude or Codex' : 'No supported agent binary found on PATH'}
               onClick={() => available && action('spawn', b)}
             >
               <div className="top">
                 <PriorityPill priority={b.priority}/>
                 <span className="mono" style={{fontSize: 11}}>{b.slug}</span>
-                <ProviderMark provider={provider} size={12}/>
+                <span style={{marginLeft: 'auto', display: 'inline-flex', gap: 3}} title="Choose Claude or Codex">
+                  <ProviderMark provider="claude" size={12}/>
+                  <ProviderMark provider="codex" size={12}/>
+                </span>
               </div>
               <div className="nm">{b.name}</div>
-              <div className="meta">{b.project}{b.due ? ` · due ${b.due}` : ''}{available ? '' : ` · ${provider} unavailable`}</div>
+              <div className="meta">{b.project}{b.due ? ` · due ${b.due}` : ''}{available ? ' · choose provider' : ' · no provider available'}</div>
+              <DependencyBadges task={b} compact/>
             </div>
           );
         }) : <BrandEmpty compact title="Backlog is clear" body="New task briefs will appear here when they are ready to spawn."/>}
@@ -914,6 +917,7 @@ const SessionDetail = ({ agent, goto, action, gitDiffOpen = false, toggleGitDiff
           </div>
         </div>
       )}
+      <DependencyBadges task={current}/>
       <div className={`bridge-layout${gitDiffOpen ? '' : ' single'}`}>
         {providerAvailable ? (
           nativeTranscriptMode
@@ -975,6 +979,7 @@ const CompletedSessionView = ({ agent, goto, gitDiffOpen = false, toggleGitDiff 
         <button className="btn sm" onClick={() => goto('tasks')}><Icon name="list" size={11}/>Tasks</button>
       </div>
     </div>
+    <DependencyBadges task={agent}/>
     <div className={`completed-layout${gitDiffOpen ? '' : ' single'}`}>
       <div className="pane">
         <div className="pane-head">
@@ -1436,7 +1441,8 @@ const TasksList = ({ setFocus, action, goto }) => {
   ];
   const openTask = (t) => {
     const provider = t.provider || 'claude';
-    if ((t.hasAgent || t.status_outer === 'backlog') && !isCapabilityAvailable('providers', provider)) return;
+    if (t.hasAgent && !isCapabilityAvailable('providers', provider)) return;
+    if (t.status_outer === 'backlog' && !anyProviderAvailable()) return;
     if (t.hasAgent) { action('attach', t); return; }
     if (t.status_outer === 'backlog') { action('spawn', t); return; }
     if (t.status_outer === 'done' && goto) { goto(`session/${t.slug}`); }
@@ -1455,7 +1461,7 @@ const TasksList = ({ setFocus, action, goto }) => {
           <tr>
             <th style={{width: 30}}></th>
             <th>Status</th><th>Priority</th><th>Slug</th><th>Name</th><th>Project</th>
-            <th>Branch</th><th>Age</th><th>Tags</th><th></th>
+            <th>Dependencies</th><th>Branch</th><th>Age</th><th>Tags</th><th></th>
           </tr>
         </thead>
         <tbody>
@@ -1467,6 +1473,7 @@ const TasksList = ({ setFocus, action, goto }) => {
               <td className="mono" style={{fontSize: 12}}>{t.slug}</td>
               <td>{t.name}</td>
               <td className="mono" style={{fontSize: 11, color: 'var(--text-dim)'}}>{t.project}</td>
+              <td><DependencyBadges task={t} compact/></td>
               <td>{t.branch ? <BranchChip name={t.branch}/> : <span style={{color: 'var(--text-faint)'}}>—</span>}</td>
               <td className="mono" style={{fontSize: 11, color: 'var(--text-dim)'}}>{t.started_min ? formatAge(t.started_min) : '—'}</td>
               <td>{(t.tags || []).slice(0,2).map(tg => <span key={tg} className="tag-chip" style={{marginRight: 4}}>{tg}</span>)}</td>
@@ -1475,7 +1482,7 @@ const TasksList = ({ setFocus, action, goto }) => {
                   {t.hasAgent ? (
                     <button className="btn sm primary" disabled={!isCapabilityAvailable('providers', t.provider || 'claude')} title={isCapabilityAvailable('providers', t.provider || 'claude') ? '' : capabilityReason('providers', t.provider || 'claude')} onClick={(e) => { e.stopPropagation(); action('attach', t); }}><Icon name="external-link" size={10}/>Open</button>
                   ) : t.status_outer === 'backlog' ? (
-                    <button className="btn sm green" disabled={!isCapabilityAvailable('providers', t.provider || 'claude')} title={isCapabilityAvailable('providers', t.provider || 'claude') ? '' : capabilityReason('providers', t.provider || 'claude')} onClick={(e) => { e.stopPropagation(); action('spawn', t); }}><Icon name="play" size={10}/>Spawn</button>
+                    <button className="btn sm green" disabled={!anyProviderAvailable()} title={anyProviderAvailable() ? 'Choose Claude or Codex' : 'No supported agent binary found on PATH'} onClick={(e) => { e.stopPropagation(); action('spawn', t); }}><Icon name="play" size={10}/>Spawn</button>
                   ) : (
                     <button className="btn sm" onClick={(e) => { e.stopPropagation(); goto && goto(`session/${t.slug}`); }}><Icon name="check-circle" size={10}/>Details</button>
                   )}
@@ -2157,6 +2164,7 @@ const ProjectDetail = ({ slug, goto, action, onAddTask, refreshKey }) => {
                       <td className="mono" style={{fontSize: 12, fontWeight: 600, color: 'var(--text)'}}>{t.slug}</td>
                       <td style={{color: 'var(--text-mid)'}}>{t.name}</td>
                       <td><PriorityPill priority={t.priority}/></td>
+                      <td><DependencyBadges task={t} compact/></td>
                       <td className="mono dim" style={{fontSize: 11}}>{t.waiting_on ? `waiting: ${t.waiting_on}` : (t.temporal_summary || '')}</td>
                       <td style={{textAlign: 'right'}}><button className="btn sm" onClick={() => goto(`session/${t.slug}`)}>View</button></td>
                     </tr>

@@ -272,6 +272,44 @@ func TestCmdUpdateTaskWaitingMutuallyExclusive(t *testing.T) {
 	}
 }
 
+func TestCmdUpdateTaskParent(t *testing.T) {
+	setupFlowRoot(t)
+	seedTask(t, "ut-parent")
+	seedTask(t, "ut-child")
+
+	if rc := cmdUpdate([]string{"task", "ut-child", "--parent", "ut-parent"}); rc != 0 {
+		t.Fatalf("set rc=%d", rc)
+	}
+	db := openFlowDB(t)
+	task, _ := flowdb.GetTask(db, "ut-child")
+	if !task.ParentSlug.Valid || task.ParentSlug.String != "ut-parent" {
+		t.Errorf("parent_slug = %+v, want ut-parent", task.ParentSlug)
+	}
+
+	if rc := cmdUpdate([]string{"task", "ut-child", "--clear-parent"}); rc != 0 {
+		t.Fatalf("clear rc=%d", rc)
+	}
+	task, _ = flowdb.GetTask(db, "ut-child")
+	if task.ParentSlug.Valid {
+		t.Errorf("parent_slug should be NULL after clear, got %q", task.ParentSlug.String)
+	}
+}
+
+func TestCmdUpdateTaskParentValidatesRef(t *testing.T) {
+	setupFlowRoot(t)
+	seedTask(t, "ut-child")
+
+	if rc := cmdUpdate([]string{"task", "ut-child", "--parent", "missing-parent"}); rc != 1 {
+		t.Errorf("rc=%d, want 1 for unknown parent", rc)
+	}
+	if rc := cmdUpdate([]string{"task", "ut-child", "--parent", "ut-child"}); rc != 2 {
+		t.Errorf("rc=%d, want 2 for self parent", rc)
+	}
+	if rc := cmdUpdate([]string{"task", "ut-child", "--parent", "ut-child", "--clear-parent"}); rc != 2 {
+		t.Errorf("rc=%d, want 2 for mutually exclusive parent flags", rc)
+	}
+}
+
 func TestCmdUpdateProjectPriority(t *testing.T) {
 	setupFlowRoot(t)
 	wd := t.TempDir()

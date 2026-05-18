@@ -241,6 +241,24 @@ func printTaskMetadata(db *sql.DB, t *flowdb.Task, root string) {
 	}
 	fmt.Printf("project:       %s\n", projName)
 	fmt.Printf("status:        %s\n", t.Status)
+	if t.ParentSlug.Valid && t.ParentSlug.String != "" {
+		parentLabel := t.ParentSlug.String
+		parent, err := loadTaskRelationSummary(db, t.ParentSlug.String)
+		if err == nil {
+			parentLabel = fmt.Sprintf("%s (%s) %s", parent.Slug, parent.Status, parent.Name)
+		} else if err != sql.ErrNoRows {
+			fmt.Fprintf(os.Stderr, "warning: load parent task: %v\n", err)
+		}
+		fmt.Printf("parent:        %s\n", parentLabel)
+	}
+	if children, err := loadTaskChildren(db, t.Slug); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: load child tasks: %v\n", err)
+	} else if len(children) > 0 {
+		fmt.Println("children:")
+		for _, child := range children {
+			fmt.Printf("  - %s (%s) %s\n", child.Slug, child.Status, child.Name)
+		}
+	}
 
 	// Staleness marker for in-progress tasks.
 	if t.Status == "in-progress" && !t.ArchivedAt.Valid {
@@ -374,6 +392,51 @@ func printTaskMetadata(db *sql.DB, t *flowdb.Task, root string) {
 			fmt.Printf("  - %s\n", k)
 		}
 	}
+}
+
+type taskRelationSummary struct {
+	Slug   string
+	Name   string
+	Status string
+}
+
+func loadTaskRelationSummary(db *sql.DB, slug string) (*taskRelationSummary, error) {
+	var summary taskRelationSummary
+	err := db.QueryRow(
+		`SELECT slug, name, status FROM tasks WHERE slug = ?`,
+		slug,
+	).Scan(&summary.Slug, &summary.Name, &summary.Status)
+	if err != nil {
+		return nil, err
+	}
+	return &summary, nil
+}
+
+func loadTaskChildren(db *sql.DB, slug string) ([]taskRelationSummary, error) {
+	rows, err := db.Query(
+		`SELECT slug, name, status
+		 FROM tasks
+		 WHERE parent_slug = ? AND deleted_at IS NULL
+		 ORDER BY created_at ASC, slug ASC`,
+		slug,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var children []taskRelationSummary
+	for rows.Next() {
+		var child taskRelationSummary
+		if err := rows.Scan(&child.Slug, &child.Name, &child.Status); err != nil {
+			return nil, err
+		}
+		children = append(children, child)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return children, nil
 }
 
 // printProjectMetadata writes the human-readable view of a project row.

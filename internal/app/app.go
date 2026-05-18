@@ -126,6 +126,7 @@ Edit / mutate:
                              [--status <s>] [--priority h|m|l]
                              [--assignee <name>] [--clear-assignee]
                              [--due-date <date>] [--clear-due]
+                             [--parent <task>] [--clear-parent]
                              [--waiting "<who or what>"] [--clear-waiting]
                              [--tag <t> ...] [--remove-tag <t> ...] [--clear-tags]
   flow update project  <ref> [--slug <new>] [--name <new>] [--work-dir <path>] [--mkdir] [--priority h|m|l]

@@ -135,6 +135,38 @@ func TestUIDataJSONEndpointUsesFlowRecords(t *testing.T) {
 	}
 }
 
+func TestUIDataIncludesTaskDependencies(t *testing.T) {
+	root, db := testRootDB(t)
+	insertProjectTask(t, db, root)
+	now := "2026-05-12T10:05:00+05:30"
+	if _, err := db.Exec(
+		`INSERT INTO tasks (slug, name, project_slug, status, kind, parent_slug, priority, work_dir, created_at, updated_at)
+		 VALUES ('polish-ui', 'Polish dashboard UI', 'flow', 'backlog', 'regular', 'build-ui', 'medium', ?, ?, ?)`,
+		root, now, now,
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	srv := New(Config{DB: db, FlowRoot: root, Version: "test"})
+	data, err := srv.buildUIData()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	bySlug := map[string]uiBacklogTask{}
+	for _, task := range data.Backlog {
+		bySlug[task.Slug] = task
+	}
+	child := bySlug["polish-ui"]
+	if child.Parent == nil || child.Parent.Slug != "build-ui" || child.Parent.Status != "backlog" {
+		t.Fatalf("child dependency parent = %+v", child.Parent)
+	}
+	parent := bySlug["build-ui"]
+	if len(parent.Children) != 1 || parent.Children[0].Slug != "polish-ui" || parent.Children[0].Status != "backlog" {
+		t.Fatalf("parent dependency children = %+v", parent.Children)
+	}
+}
+
 func TestUIDataTrashContainsDeletedRecords(t *testing.T) {
 	root, db := testRootDB(t)
 	insertProjectTask(t, db, root)
@@ -737,6 +769,34 @@ func TestCreateFlowExistingActiveTaskOpensExisting(t *testing.T) {
 	}
 }
 
+func TestSpawnBacklogActionAppliesProviderChoiceBeforeSessionCreation(t *testing.T) {
+	root, db := testRootDB(t)
+	insertProjectTask(t, db, root)
+	srv := New(Config{DB: db, FlowRoot: root, CommandPath: "/bin/false"})
+
+	resp, status := srv.runAction(actionRequest{
+		Kind:     "spawn",
+		Slug:     "build-ui",
+		Provider: "codex",
+	})
+	if status != http.StatusOK || !resp.OK || !resp.Bridge || resp.Agent == nil {
+		t.Fatalf("status = %d, resp = %+v", status, resp)
+	}
+	if resp.Agent.Provider != "codex" {
+		t.Fatalf("agent provider = %q, want codex", resp.Agent.Provider)
+	}
+	task, err := flowdb.GetTask(db, "build-ui")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if task.SessionProvider != "codex" {
+		t.Fatalf("task provider = %q, want codex", task.SessionProvider)
+	}
+	if task.Status != "backlog" || task.SessionID.Valid || task.SessionStarted.Valid {
+		t.Fatalf("spawn action should not create a session before terminal launch: %+v", task)
+	}
+}
+
 func TestSpawnRunActionCreatesBrowserBridgeRun(t *testing.T) {
 	root, db := testRootDB(t)
 	playbookDir := filepath.Join(root, "playbooks", "tri")
@@ -858,6 +918,9 @@ func TestStaticActionPayloadForwardsProvider(t *testing.T) {
 	if !strings.Contains(body, "provider: target.provider") {
 		t.Fatal("serverAction payload must forward provider so UI-created Codex tasks do not default to Claude")
 	}
+	if !strings.Contains(body, "Choose agent provider") || !strings.Contains(body, "_providerChosen") {
+		t.Fatal("backlog spawn must ask for Claude vs Codex before opening a session")
+	}
 	if !strings.Contains(body, "/api/tasks/${encodeURIComponent(sessionSlug)}/bridge") {
 		t.Fatal("completed session routes must fetch the full bridge snapshot instead of using capped ui-data transcripts")
 	}
@@ -895,12 +958,18 @@ func TestStaticActionPayloadForwardsProvider(t *testing.T) {
 	if !strings.Contains(string(tiles), "permissionWaiting ? (") || !strings.Contains(string(tiles), "onAction('pause', agent)") {
 		t.Fatal("non-permission waiting tiles should expose pause/open actions instead of approve/deny")
 	}
+	if !strings.Contains(string(tiles), "const DependencyBadges") || !strings.Contains(string(tiles), "window.MC.DependencyBadges = DependencyBadges") {
+		t.Fatal("agent tiles must expose dependency badges for parent/child task relationships")
+	}
 	screens, err := staticFS.ReadFile("static/assets/c906f42d-c4d3-4f33-b4a9-aca5e8a18052.js")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if strings.Contains(string(screens), "Attach to ") || strings.Contains(string(screens), ">Attach</button>") {
 		t.Fatal("session navigation copy should say Open instead of Attach")
+	}
+	if !strings.Contains(string(screens), "<th>Dependencies</th>") || strings.Count(string(screens), "DependencyBadges task=") < 3 {
+		t.Fatal("task screens should render dependencies in backlog, table, and project rows")
 	}
 }
 

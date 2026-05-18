@@ -89,8 +89,8 @@ var sessionAnyUUIDRe = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-
 
 // cmdUpdateTask implements `flow update task <ref> [--work-dir <path>]
 // [--mkdir] [--status <s>] [--assignee <name>] [--due-date <date>]
-// [--waiting ...] [--tag ...]`. At least one field-changing flag
-// must be given.
+// [--parent <slug>] [--waiting ...] [--tag ...]`. At least one
+// field-changing flag must be given.
 //
 // Status accepts any of backlog|in-progress|done. The session_id
 // invariant (only backlog may have NULL session_id) is enforced
@@ -119,6 +119,8 @@ func cmdUpdateTask(args []string) int {
 	clearAssignee := fs.Bool("clear-assignee", false, "clear the assignee (back to default = self)")
 	dueDate := fs.String("due-date", "", "new due date (YYYY-MM-DD, today, tomorrow, monday, 3d)")
 	clearDue := fs.Bool("clear-due", false, "clear the due date")
+	parent := fs.String("parent", "", "set parent task slug (this task depends on the parent)")
+	clearParent := fs.Bool("clear-parent", false, "clear parent task link")
 	waiting := fs.String("waiting", "", "set waiting_on freeform note (\"<who or what>\")")
 	clearWaiting := fs.Bool("clear-waiting", false, "clear waiting_on")
 	var addTags stringSliceFlag
@@ -132,10 +134,11 @@ func cmdUpdateTask(args []string) int {
 	anyField := *newSlug != "" || *newName != "" ||
 		*workDir != "" || *status != "" || *priority != "" ||
 		*assignee != "" || *clearAssignee || *dueDate != "" || *clearDue ||
+		*parent != "" || *clearParent ||
 		*waiting != "" || *clearWaiting ||
 		len(addTags) > 0 || len(removeTags) > 0 || *clearTags
 	if !anyField {
-		fmt.Fprintln(os.Stderr, "error: give at least one of --slug, --name, --work-dir, --status, --priority, --assignee, --clear-assignee, --due-date, --clear-due, --waiting, --clear-waiting, --tag, --remove-tag, --clear-tags")
+		fmt.Fprintln(os.Stderr, "error: give at least one of --slug, --name, --work-dir, --status, --priority, --assignee, --clear-assignee, --due-date, --clear-due, --parent, --clear-parent, --waiting, --clear-waiting, --tag, --remove-tag, --clear-tags")
 		return 2
 	}
 
@@ -164,6 +167,10 @@ func cmdUpdateTask(args []string) int {
 	}
 	if *clearDue && *dueDate != "" {
 		fmt.Fprintln(os.Stderr, "error: --due-date and --clear-due are mutually exclusive")
+		return 2
+	}
+	if *clearParent && *parent != "" {
+		fmt.Fprintln(os.Stderr, "error: --parent and --clear-parent are mutually exclusive")
 		return 2
 	}
 	if *clearWaiting && *waiting != "" {
@@ -292,6 +299,39 @@ func cmdUpdateTask(args []string) int {
 			return 1
 		}
 		fmt.Printf("priority → %s\n", *priority)
+	}
+	if *parent != "" {
+		parentTask, err := ResolveTask(db, *parent, true)
+		if err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				fmt.Fprintf(os.Stderr, "error: parent task %q not found\n", *parent)
+				return 1
+			}
+			fmt.Fprintf(os.Stderr, "error: resolve parent: %v\n", err)
+			return 1
+		}
+		if parentTask.Slug == task.Slug {
+			fmt.Fprintln(os.Stderr, "error: task cannot depend on itself")
+			return 2
+		}
+		if _, err := db.Exec(
+			`UPDATE tasks SET parent_slug=?, updated_at=? WHERE slug=?`,
+			parentTask.Slug, now, task.Slug,
+		); err != nil {
+			fmt.Fprintf(os.Stderr, "error: update parent: %v\n", err)
+			return 1
+		}
+		fmt.Printf("parent → %s\n", parentTask.Slug)
+	}
+	if *clearParent {
+		if _, err := db.Exec(
+			`UPDATE tasks SET parent_slug=NULL, updated_at=? WHERE slug=?`,
+			now, task.Slug,
+		); err != nil {
+			fmt.Fprintf(os.Stderr, "error: clear parent: %v\n", err)
+			return 1
+		}
+		fmt.Println("parent cleared")
 	}
 	if *waiting != "" {
 		if _, err := db.Exec(

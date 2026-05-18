@@ -212,6 +212,7 @@ Edit / mutate
                             [--status backlog|in-progress|done] [--priority high|medium|low]
                             [--assignee <name>] [--clear-assignee]
                             [--due-date <date>] [--clear-due]
+                            [--parent <task>] [--clear-parent]
                             [--waiting "<who or what>"] [--clear-waiting]
   flow update project <ref> [--priority high|medium|low]
   flow archive        <ref>
@@ -1634,8 +1635,9 @@ shape, surface the orchestration option via AskUserQuestion. Examples:
   If the work could plausibly be done inline OR delegated, ask via
   AskUserQuestion. The user often prefers inline for quick tasks.
 - **Do not edit `parent_slug` by hand.** It's set by `flow spawn` at
-  creation time. To re-parent, use the future `flow update task --parent`
-  (not yet shipped — file an issue if you need it).
+  creation time, and existing tasks can be re-parented with
+  `flow update task <child> --parent <parent>` or detached with
+  `flow update task <child> --clear-parent`.
 
 **Reading children:**
 
@@ -2048,6 +2050,7 @@ flow update task <ref>
     [--priority high|medium|low]
     [--assignee <name>] [--clear-assignee]
     [--due-date <date>]   [--clear-due]
+    [--parent <task>] [--clear-parent]
     [--waiting "<who or what>"] [--clear-waiting]
     [--tag <t> ...] [--remove-tag <t> ...] [--clear-tags]
 
@@ -2077,6 +2080,10 @@ When to use which flag:
   only when it's non-null.
 - **`--due-date <date>` / `--clear-due`** — set or clear the due date.
   Date formats: `YYYY-MM-DD`, `today`, `tomorrow`, weekday names, `Nd`.
+- **`--parent <task>` / `--clear-parent`** — set or clear parent/child
+  task linkage. Use this for real task-to-task dependencies where the
+  child should not start until the parent lands; use `waiting_on` for
+  looser external blockers.
 - **`--waiting "<X>"` / `--clear-waiting`** — set or clear the
   `waiting_on` freeform note (see §4.6). Status stays in-progress;
   the note is just there to remind the user.

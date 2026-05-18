@@ -276,6 +276,42 @@ func TestCmdShowTaskWaitingOn(t *testing.T) {
 	}
 }
 
+func TestCmdShowTaskParentAndChildren(t *testing.T) {
+	root, db := showListEditDB(t)
+	insertTask(t, db, "parent-task", "Parent Task", "backlog", "high", filepath.Join(root, "x"), nil)
+	insertTask(t, db, "child-one", "Child One", "backlog", "medium", filepath.Join(root, "x"), nil)
+	insertTask(t, db, "child-two", "Child Two", "in-progress", "medium", filepath.Join(root, "x"), nil)
+	if _, err := db.Exec(`UPDATE tasks SET parent_slug = ? WHERE slug IN (?, ?)`, "parent-task", "child-one", "child-two"); err != nil {
+		t.Fatal(err)
+	}
+
+	childOut := captureStdout(t, func() {
+		if rc := cmdShow([]string{"task", "child-one"}); rc != 0 {
+			t.Errorf("rc=%d", rc)
+		}
+	})
+	if !strings.Contains(childOut, "parent:        parent-task (backlog) Parent Task") {
+		t.Errorf("missing parent line; out=%q", childOut)
+	}
+
+	parentOut := captureStdout(t, func() {
+		if rc := cmdShow([]string{"task", "parent-task"}); rc != 0 {
+			t.Errorf("rc=%d", rc)
+		}
+	})
+	if !strings.Contains(parentOut, "children:") {
+		t.Errorf("missing children section; out=%q", parentOut)
+	}
+	for _, want := range []string{
+		"- child-one (backlog) Child One",
+		"- child-two (in-progress) Child Two",
+	} {
+		if !strings.Contains(parentOut, want) {
+			t.Errorf("missing child %q; out=%q", want, parentOut)
+		}
+	}
+}
+
 func TestCmdShowTaskArchivedStillShown(t *testing.T) {
 	root, db := showListEditDB(t)
 	insertTask(t, db, "ghost", "G", "done", "low", filepath.Join(root, "x"), nil)

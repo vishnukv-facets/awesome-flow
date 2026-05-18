@@ -688,6 +688,15 @@ select.form-input { appearance: none; background-image: linear-gradient(45deg, t
 .branch-empty { padding: 10px 8px; color: var(--text-faint); font-size: 11px; }
 
 .tag-chip { display: inline-flex; align-items: center; padding: 1px 6px; border-radius: 2px; background: var(--surface-2); color: var(--text-dim); font-size: 10.5px; font-family: var(--mono); }
+.dependency-strip { display: flex; flex-wrap: wrap; align-items: center; gap: 5px; min-width: 0; margin-top: 6px; }
+.dependency-strip.compact { margin-top: 5px; }
+.dependency-chip { display: inline-flex; align-items: center; gap: 4px; max-width: 100%; min-width: 0; padding: 2px 6px; border: 1px solid var(--border); border-radius: 3px; background: var(--surface-2); color: var(--text-dim); font-family: var(--mono); font-size: 10.5px; line-height: 1.25; }
+.dependency-chip.parent.open { color: var(--waiting); border-color: rgba(245,166,35,0.34); background: var(--waiting-dim); }
+.dependency-chip.parent.done { color: var(--running); border-color: rgba(46,182,114,0.28); background: var(--running-dim); }
+.dependency-chip.children { color: var(--primary-hi); border-color: rgba(139,135,248,0.34); background: rgba(100,93,246,0.12); }
+.dependency-chip strong { color: var(--text); font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dependency-chip em { max-width: 150px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-faint); font-style: normal; }
+.table .dependency-strip, .tbl .dependency-strip { margin-top: 0; }
 
 .kbd { display: inline-block; padding: 1px 5px; font-family: var(--mono); font-size: 10.5px; background: var(--surface-2); color: var(--text-mid); border-radius: 3px; border: 1px solid var(--border); }
 
@@ -1582,6 +1591,51 @@ const SessionFallback = ({ slug, goto, action }) => {
   );
 };
 
+const ProviderChoiceModal = ({ target, providers, onPick, onClose }) => {
+  const fallbackProviders = [
+    { id: 'claude', label: 'Claude Code', available: true },
+    { id: 'codex', label: 'Codex', available: true },
+  ];
+  const options = (providers && providers.length ? providers : fallbackProviders)
+    .filter(p => p && (p.id === 'claude' || p.id === 'codex'));
+  const name = target?.name || target?.slug || 'this backlog task';
+  return (
+    <div className="modal-scrim centered" onClick={onClose}>
+      <div className="modal" style={{width: 420}} onClick={(e) => e.stopPropagation()}>
+        <div className="modal-head">
+          <Icon name="play" size={14}/>
+          <span>Choose agent provider</span>
+          <button className="modal-close" onClick={onClose}><Icon name="x" size={12}/></button>
+        </div>
+        <div className="modal-body" style={{display: 'flex', flexDirection: 'column', gap: 10}}>
+          <div style={{color: 'var(--text)', fontSize: 13}}>{name}</div>
+          <div style={{display: 'grid', gap: 8}}>
+            {options.map(p => (
+              <button
+                key={p.id}
+                className={`btn ${p.available ? '' : 'disabled'}`}
+                disabled={!p.available}
+                title={p.available ? '' : (p.reason || `${p.id} unavailable`)}
+                onClick={() => p.available && onPick(p.id)}
+                style={{justifyContent: 'flex-start', padding: '10px 12px'}}
+              >
+                <ProviderMark provider={p.id} size={16}/>
+                <span>{p.label || p.id}</span>
+                <span className="mono" style={{marginLeft: 'auto', fontSize: 10.5, color: p.available ? 'var(--text-faint)' : 'var(--error)'}}>
+                  {p.available ? 'available' : (p.reason || 'unavailable')}
+                </span>
+              </button>
+            ))}
+          </div>
+        </div>
+        <div className="modal-foot">
+          <button className="btn sm" onClick={onClose}>Cancel</button>
+        </div>
+      </div>
+    </div>
+  );
+};
+
 const App = () => {
   const [route, setRoute] = useState(() => routeFromLocation());
   const [focus, setFocus] = useState(null);
@@ -1595,6 +1649,7 @@ const App = () => {
 	  const [sort, setSort] = useState('priority');
 	  const [dataTick, setDataTick] = useState(0);
 	  const [bridgeAgents, setBridgeAgents] = useState({});
+	  const [providerPick, setProviderPick] = useState(null);
 	  const [gitDiffOpen, setGitDiffOpen] = useState(() => {
 	    try { return localStorage.getItem('flow.gitDiffOpen') === '1'; } catch (_) { return false; }
 	  });
@@ -1720,6 +1775,10 @@ const App = () => {
   const capabilityReason = (group, id) => capabilityFor(group, id).reason || 'not available';
 
   const action = (kind, target) => {
+    const isBacklogTarget = (t = {}) => {
+      if (!t || t.hasAgent) return false;
+      return t.status_outer === 'backlog' || BACKLOG.some(b => b.slug === t.slug);
+    };
     const ensureProvider = (t = {}) => {
       const provider = t.provider || 'claude';
       if (capabilityAvailable('providers', provider)) return true;
@@ -1791,7 +1850,18 @@ const App = () => {
       return;
     }
     if (kind === 'investigate') { openBridge('attach', target); return; }
-    if (kind === 'spawn') { openBridge('spawn', target); return; }
+    if (kind === 'spawn') {
+      if (isBacklogTarget(target) && !target._providerChosen) {
+        if (!anyProviderAvailable()) {
+          setToast('No supported agent binary found on PATH');
+          return null;
+        }
+        setProviderPick(target);
+        return null;
+      }
+      openBridge('spawn', target);
+      return;
+    }
     if (kind === 'spawn-run') {
       if (!ensureProvider(target)) return null;
       setToast(`spawning playbook run · ${target.slug}`);
@@ -1870,7 +1940,7 @@ const App = () => {
       if (tag === 'input' || tag === 'textarea') { if (e.key === 'Escape') e.target.blur(); return; }
       if (e.key === '/') { e.preventDefault(); setPalette(true); return; }
       if (e.key === '?') { e.preventDefault(); setHelp(true); return; }
-      if (e.key === 'Escape') { setFocus(null); setPalette(false); setQR(false); setHelp(false); setCreateOpen(false); setCreatePreselect(null); setConfirm(null); return; }
+      if (e.key === 'Escape') { setFocus(null); setPalette(false); setQR(false); setHelp(false); setCreateOpen(false); setCreatePreselect(null); setConfirm(null); setProviderPick(null); return; }
       if (e.key === 'g') { pending = 'g'; setTimeout(() => { pending = null; }, 800); return; }
       if (pending === 'g') {
         pending = null;
@@ -2050,6 +2120,7 @@ const App = () => {
       {qr && <QRModal onClose={() => setQR(false)}/>}
       {help && <ShortcutsOverlay onClose={() => setHelp(false)}/>}
       {createOpen && <CreateFlowModal onClose={closeCreateModal} projects={PROJECTS_MC.map(p => p.slug)} action={action} preselect={createPreselect}/>}
+      {providerPick && <ProviderChoiceModal target={providerPick} providers={capabilityList('providers')} onClose={() => setProviderPick(null)} onPick={(provider) => { const target = providerPick; setProviderPick(null); action('spawn', { ...target, provider, _providerChosen: true }); }}/>}
       {confirm && <ConfirmModal {...confirm} onClose={() => setConfirm(null)}/>}
       {toast && (
         <div style={{position: 'fixed', bottom: 20, left: '50%', transform: 'translateX(-50%)', background: 'var(--surface)', border: '1px solid var(--border-strong)', padding: '8px 14px', borderRadius: 4, fontFamily: 'var(--mono)', fontSize: 12, color: 'var(--text)', zIndex: 200, boxShadow: '0 8px 24px rgba(0,0,0,0.4)'}}>

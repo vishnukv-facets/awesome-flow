@@ -182,6 +182,37 @@ const BranchChip = ({ name }) => (
   <span className="branch-chip"><Icon name="git-branch" size={10}/>{name}</span>
 );
 
+const DependencyBadges = ({ task, compact = false }) => {
+  if (!task) return null;
+  const parent = task.parent || (task.parent_slug ? { slug: task.parent_slug } : null);
+  const children = Array.isArray(task.children) ? task.children : [];
+  if (!parent && children.length === 0) return null;
+  const parentStatus = parent?.status || 'unknown';
+  const parentOpen = parent && parentStatus !== 'done';
+  const childPreview = children.slice(0, compact ? 1 : 3).map(c => c.slug).join(', ');
+  const hiddenChildren = Math.max(0, children.length - (compact ? 1 : 3));
+  return (
+    <div className={`dependency-strip ${compact ? 'compact' : ''}`}>
+      {parent && (
+        <span className={`dependency-chip parent ${parentOpen ? 'open' : 'done'}`} title={`${task.slug} depends on ${parent.slug}${parent.status ? ` (${parent.status})` : ''}`}>
+          <Icon name="corner-down-right" size={10}/>
+          <span>depends on</span>
+          <strong className="mono">{parent.slug}</strong>
+          {parent.status && <em>{parent.status}</em>}
+        </span>
+      )}
+      {children.length > 0 && (
+        <span className="dependency-chip children" title={`${children.length} task${children.length === 1 ? '' : 's'} depend on ${task.slug}${childPreview ? `: ${childPreview}` : ''}`}>
+          <Icon name="git-fork" size={10}/>
+          <span>blocks</span>
+          <strong className="mono">{children.length}</strong>
+          {!compact && childPreview && <em>{childPreview}{hiddenChildren ? ` +${hiddenChildren}` : ''}</em>}
+        </span>
+      )}
+    </div>
+  );
+};
+
 const Sparkline = ({ data, color = 'var(--accent)', height = 24, width = 120 }) => {
   const max = Math.max(1, ...data);
   return (
@@ -247,6 +278,7 @@ const AgentTile = ({ agent, onOpen, onAction, big }) => {
           <span className="mono">{formatAge(agent.started_min)} old</span>
           {agent.project && <><span className="m-sep">·</span><span className="mono dim">{agent.project}</span></>}
         </div>
+        <DependencyBadges task={agent} compact/>
         {(agent.pr_links || []).length > 0 && (
           <div className="pr-link-row" onClick={(e) => e.stopPropagation()}>
             {agent.pr_links.map(pr => (
@@ -660,6 +692,7 @@ const FocusDrawer = ({ agent, onClose, goto, action }) => {
           <div className="drawer-meta">
             <span>{agent.name}</span>
             <div className="mono dim" style={{fontSize: 12, marginTop: 4}}>{agent.project || '(floating)'} · {agent.branch}</div>
+            <DependencyBadges task={agent}/>
           </div>
           <div className="drawer-summary">
             <h4>Last 5 minutes</h4>
@@ -701,6 +734,7 @@ window.MC.PriorityPill = PriorityPill;
 window.MC.AgentChip = AgentChip;
 window.MC.ProviderMark = ProviderMark;
 window.MC.BranchChip = BranchChip;
+window.MC.DependencyBadges = DependencyBadges;
 window.MC.PixelIndicator = PixelIndicator;
 window.MC.Sparkline = Sparkline;
 window.MC.AgentTile = AgentTile;

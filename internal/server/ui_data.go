@@ -121,6 +121,8 @@ type uiAgent struct {
 	Slug            string         `json:"slug"`
 	Name            string         `json:"name"`
 	Project         *string        `json:"project"`
+	Parent          *TaskSummary   `json:"parent,omitempty"`
+	Children        []TaskSummary  `json:"children,omitempty"`
 	Branch          string         `json:"branch"`
 	Branches        []string       `json:"branches,omitempty"`
 	WorkDir         string         `json:"work_dir"`
@@ -217,14 +219,16 @@ type uiTermLine struct {
 }
 
 type uiBacklogTask struct {
-	Slug      string   `json:"slug"`
-	Name      string   `json:"name"`
-	Project   string   `json:"project"`
-	Provider  string   `json:"provider"`
-	Priority  string   `json:"priority"`
-	Due       string   `json:"due,omitempty"`
-	Tags      []string `json:"tags,omitempty"`
-	WaitingOn *string  `json:"waiting_on,omitempty"`
+	Slug      string        `json:"slug"`
+	Name      string        `json:"name"`
+	Project   string        `json:"project"`
+	Parent    *TaskSummary  `json:"parent,omitempty"`
+	Children  []TaskSummary `json:"children,omitempty"`
+	Provider  string        `json:"provider"`
+	Priority  string        `json:"priority"`
+	Due       string        `json:"due,omitempty"`
+	Tags      []string      `json:"tags,omitempty"`
+	WaitingOn *string       `json:"waiting_on,omitempty"`
 }
 
 type uiProject struct {
@@ -841,6 +845,8 @@ func (s *Server) uiAgent(tv TaskView, live map[string]bool) uiAgent {
 		Slug:            tv.Slug,
 		Name:            tv.Name,
 		Project:         tv.ProjectSlug,
+		Parent:          tv.Parent,
+		Children:        tv.Children,
 		Branch:          branch,
 		Branches:        branches,
 		WorkDir:         workDir,
@@ -1140,6 +1146,8 @@ func (s *Server) uiBacklog(tv TaskView) uiBacklogTask {
 		Slug:      tv.Slug,
 		Name:      tv.Name,
 		Project:   project,
+		Parent:    tv.Parent,
+		Children:  tv.Children,
 		Provider:  provider,
 		Priority:  tv.Priority,
 		Tags:      tv.Tags,

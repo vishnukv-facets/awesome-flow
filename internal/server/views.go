@@ -97,8 +97,12 @@ func BuildTaskView(db *sql.DB, root string, t *flowdb.Task, live map[string]bool
 		}
 	}
 
-	// Children: tasks whose parent_slug points at this task. Cheap one-shot
-	// query per detail view; skipped if this is itself a child.
+	// Dependencies: parent_slug means this task depends on the parent task;
+	// children are tasks that depend on this task.
+	if t.ParentSlug.Valid && t.ParentSlug.String != "" {
+		view.Parent = loadParent(db, t.ParentSlug.String)
+	}
+	// Children: tasks whose parent_slug points at this task.
 	view.Children = loadChildren(db, t.Slug)
 
 	// Runtime status: latest agent_runtime_states row for this session.
@@ -110,6 +114,21 @@ func BuildTaskView(db *sql.DB, root string, t *flowdb.Task, live map[string]bool
 		}
 	}
 	return view, nil
+}
+
+func loadParent(db *sql.DB, parentSlug string) *TaskSummary {
+	row := db.QueryRow(
+		`SELECT slug, name, status, priority, project_slug, updated_at
+		 FROM tasks
+		 WHERE slug = ? AND deleted_at IS NULL
+		 LIMIT 1`,
+		parentSlug,
+	)
+	s, err := scanTaskSummary(row)
+	if err != nil {
+		return nil
+	}
+	return &s
 }
 
 func loadChildren(db *sql.DB, parentSlug string) []TaskSummary {
@@ -126,18 +145,26 @@ func loadChildren(db *sql.DB, parentSlug string) []TaskSummary {
 	defer rows.Close()
 	var out []TaskSummary
 	for rows.Next() {
-		var s TaskSummary
-		var proj sql.NullString
-		if err := rows.Scan(&s.Slug, &s.Name, &s.Status, &s.Priority, &proj, &s.UpdatedAt); err != nil {
+		s, err := scanTaskSummary(rows)
+		if err != nil {
 			return out
-		}
-		if proj.Valid {
-			v := proj.String
-			s.ProjectSlug = &v
 		}
 		out = append(out, s)
 	}
 	return out
+}
+
+func scanTaskSummary(row interface{ Scan(dest ...any) error }) (TaskSummary, error) {
+	var s TaskSummary
+	var proj sql.NullString
+	if err := row.Scan(&s.Slug, &s.Name, &s.Status, &s.Priority, &proj, &s.UpdatedAt); err != nil {
+		return s, err
+	}
+	if proj.Valid {
+		v := proj.String
+		s.ProjectSlug = &v
+	}
+	return s, nil
 }
 
 func BuildTaskViews(db *sql.DB, root string, tasks []*flowdb.Task) ([]TaskView, error) {
