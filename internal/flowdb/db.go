@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"strings"
 	"time"
@@ -328,13 +329,18 @@ func NormalizeSessionProvider(provider string) (string, error) {
 // OpenDB opens (or creates) the SQLite database at path, ensures the
 // schema is present, and runs idempotent migrations.
 //
-// busy_timeout = 30s covers a worst-case migration-rebuild path running
-// concurrently with another OpenDB on the same file (e.g. two flow do
-// goroutines starting from a fresh DB). Without it, SQLite's default
-// "fail immediately on a locked DB" would surface as SQLITE_BUSY during
-// schema or migration application.
+// busy_timeout = 30s is applied via both the DSN (_pragma busy_timeout
+// so every pooled connection inherits it) and an explicit PRAGMA exec
+// on the primary connection. This covers a worst-case migration-rebuild
+// path running concurrently with another OpenDB on the same file (e.g.
+// two `flow do` invocations starting from a fresh DB). Without it,
+// SQLite's default "fail immediately on a locked DB" surfaces as flaky
+// `migrate: pragma table_info(...): database is locked` on slow runners.
 func OpenDB(path string) (*sql.DB, error) {
-	db, err := sql.Open("sqlite", path)
+	q := url.Values{}
+	q.Set("_pragma", "busy_timeout(30000)")
+	dsn := "file:" + path + "?" + q.Encode()
+	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("open sqlite %s: %w", path, err)
 	}

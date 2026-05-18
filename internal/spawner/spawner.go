@@ -1,16 +1,17 @@
 // Package spawner picks a terminal backend (zellij, kitty, Warp, iTerm2,
-// or macOS Terminal.app) at runtime and forwards SpawnTab to it.
+// Ghostty, or macOS Terminal.app) at runtime and forwards SpawnTab to it.
 //
 // Selection priority (highest first):
 //
 //	$ZELLIJ set                                    → internal/zellij
-//	$KITTY_WINDOW_ID set or $TERM=xterm-kitty      -> internal/kitty
-//	$FLOW_TERM=<valid backend>                     -> that backend (user override)
-//	WARP_IS_LOCAL_SHELL_SESSION set                -> internal/warp
-//	TERM_PROGRAM=WarpTerminal                      -> internal/warp
-//	TERM_PROGRAM=Apple_Terminal                    -> internal/terminal
-//	TERM_PROGRAM=iTerm.app                         -> internal/iterm
-//	anything else (or unset)                       -> internal/iterm  (historical default)
+//	$KITTY_WINDOW_ID set or $TERM=xterm-kitty      → internal/kitty
+//	$FLOW_TERM=<valid backend>                     → that backend (user override)
+//	WARP_IS_LOCAL_SHELL_SESSION set                → internal/warp
+//	TERM_PROGRAM=WarpTerminal                      → internal/warp
+//	TERM_PROGRAM=Apple_Terminal                    → internal/terminal
+//	TERM_PROGRAM=iTerm.app                         → internal/iterm
+//	TERM_PROGRAM=ghostty                           → internal/ghostty
+//	anything else (or unset)                       → internal/iterm  (historical default)
 //
 // $ZELLIJ and kitty's per-window markers win over $FLOW_TERM because if
 // the user is inside a session-manager terminal, that's where their
@@ -25,6 +26,7 @@
 package spawner
 
 import (
+	"flow/internal/ghostty"
 	"flow/internal/iterm"
 	"flow/internal/kitty"
 	"flow/internal/terminal"
@@ -42,6 +44,7 @@ const (
 	BackendZellij   Backend = "zellij"
 	BackendKitty    Backend = "kitty"
 	BackendWarp     Backend = "warp"
+	BackendGhostty  Backend = "ghostty"
 )
 
 // Override, if non-empty, forces a backend regardless of env vars.
@@ -63,7 +66,7 @@ func Detect() Backend {
 	}
 	if v := os.Getenv("FLOW_TERM"); v != "" {
 		switch Backend(v) {
-		case BackendITerm, BackendTerminal, BackendZellij, BackendKitty, BackendWarp:
+		case BackendITerm, BackendTerminal, BackendZellij, BackendKitty, BackendWarp, BackendGhostty:
 			return Backend(v)
 		}
 	}
@@ -77,6 +80,8 @@ func Detect() Backend {
 		return BackendTerminal
 	case "iTerm.app":
 		return BackendITerm
+	case "ghostty":
+		return BackendGhostty
 	default:
 		return BackendITerm
 	}
@@ -95,6 +100,8 @@ func SpawnTab(title, cwd, command string, envVars map[string]string) error {
 		return warp.SpawnTab(title, cwd, command, envVars)
 	case BackendTerminal:
 		return terminal.SpawnTab(title, cwd, command, envVars)
+	case BackendGhostty:
+		return ghostty.SpawnTab(title, cwd, command, envVars)
 	default:
 		return iterm.SpawnTab(title, cwd, command, envVars)
 	}
