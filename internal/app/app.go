@@ -75,6 +75,12 @@ func Run(args []string) int {
 		return cmdTranscript(rest)
 	case "hook":
 		return cmdHook(rest)
+	case "spawn":
+		return cmdSpawn(rest)
+	case "tell":
+		return cmdTell(rest)
+	case "wait":
+		return cmdWait(rest)
 	case "-h", "--help", "help":
 		printUsage()
 		return 0

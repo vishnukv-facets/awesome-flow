@@ -21,6 +21,7 @@ type MonitorEvent struct {
 	Status      string
 	FirstSeenAt string
 	LastSeenAt  string
+	LastSeq     int64
 	RawJSON     sql.NullString
 }
 
@@ -51,6 +52,7 @@ type MonitorEventInput struct {
 	Body     string
 	URL      string
 	Severity string
+	Seq      int64
 	RawJSON  string
 }
 
@@ -61,6 +63,7 @@ type AgentRuntimeStateInput struct {
 	Status    string
 	EventKind string
 	Message   string
+	Seq       int64
 	RawJSON   string
 }
 
@@ -114,11 +117,16 @@ func UpsertMonitorEvent(db *sql.DB, input MonitorEventInput) (*MonitorEvent, boo
 	}
 	now := NowISO()
 	id := MonitorEventID(source, sourceID)
+	// On conflict only apply the update if the incoming seq is at least
+	// as large as the stored one. A stale event (smaller seq) loses the
+	// race silently — the row is left unchanged. seq=0 means the hook
+	// didn't supply ordering; we still apply the update so older hook
+	// installations (pre-seq) keep working.
 	res, err := db.Exec(
 		`INSERT INTO monitor_events (
 			id, source, kind, source_id, title, body, url, severity, status,
-			first_seen_at, last_seen_at, raw_json
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'new', ?, ?, ?)
+			first_seen_at, last_seen_at, last_seq, raw_json
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'new', ?, ?, ?, ?)
 		ON CONFLICT(source, source_id) DO UPDATE SET
 			kind = excluded.kind,
 			title = excluded.title,
@@ -126,9 +134,12 @@ func UpsertMonitorEvent(db *sql.DB, input MonitorEventInput) (*MonitorEvent, boo
 			url = excluded.url,
 			severity = excluded.severity,
 			last_seen_at = excluded.last_seen_at,
-			raw_json = excluded.raw_json`,
+			last_seq = MAX(excluded.last_seq, monitor_events.last_seq),
+			raw_json = excluded.raw_json
+		WHERE excluded.last_seq = 0
+		   OR excluded.last_seq >= monitor_events.last_seq`,
 		id, source, kind, sourceID, title, NullString(input.Body), NullString(input.URL),
-		severity, now, now, NullString(input.RawJSON),
+		severity, now, now, input.Seq, NullString(input.RawJSON),
 	)
 	if err != nil {
 		return nil, false, fmt.Errorf("upsert monitor event: %w", err)
@@ -140,7 +151,7 @@ func UpsertMonitorEvent(db *sql.DB, input MonitorEventInput) (*MonitorEvent, boo
 
 func GetMonitorEvent(db *sql.DB, id string) (*MonitorEvent, error) {
 	row := db.QueryRow(
-		`SELECT id, source, kind, source_id, title, body, url, severity, status, first_seen_at, last_seen_at, raw_json
+		`SELECT id, source, kind, source_id, title, body, url, severity, status, first_seen_at, last_seen_at, last_seq, raw_json
 		 FROM monitor_events WHERE id = ?`,
 		id,
 	)
@@ -152,9 +163,9 @@ func ListMonitorEvents(db *sql.DB, limit int) ([]MonitorEvent, error) {
 		limit = 100
 	}
 	rows, err := db.Query(
-		`SELECT id, source, kind, source_id, title, body, url, severity, status, first_seen_at, last_seen_at, raw_json
+		`SELECT id, source, kind, source_id, title, body, url, severity, status, first_seen_at, last_seen_at, last_seq, raw_json
 		 FROM monitor_events
-		 ORDER BY last_seen_at DESC
+		 ORDER BY last_seq DESC, last_seen_at DESC
 		 LIMIT ?`,
 		limit,
 	)
@@ -282,7 +293,7 @@ func UpsertAgentRuntimeState(db *sql.DB, input AgentRuntimeStateInput) error {
 	}
 	status := normalizeMonitorPart(input.Status)
 	switch status {
-	case "running", "waiting", "idle", "dead":
+	case "running", "waiting", "idle", "dead", "released":
 	default:
 		return fmt.Errorf("invalid agent runtime status %q", input.Status)
 	}
@@ -290,19 +301,25 @@ func UpsertAgentRuntimeState(db *sql.DB, input AgentRuntimeStateInput) error {
 	if eventKind == "" {
 		eventKind = status
 	}
+	// Conditional apply: if the incoming seq is older than what we have,
+	// drop the update (stale event). seq=0 means the hook didn't supply
+	// ordering; we still apply for backwards-compat with pre-seq hooks.
 	_, err := db.Exec(
 		`INSERT INTO agent_runtime_states (
-			provider, session_id, task_slug, status, event_kind, message, updated_at, raw_json
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+			provider, session_id, task_slug, status, event_kind, message, updated_at, last_seq, raw_json
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(provider, session_id) DO UPDATE SET
 			task_slug = excluded.task_slug,
 			status = excluded.status,
 			event_kind = excluded.event_kind,
 			message = excluded.message,
 			updated_at = excluded.updated_at,
-			raw_json = excluded.raw_json`,
+			last_seq = MAX(excluded.last_seq, agent_runtime_states.last_seq),
+			raw_json = excluded.raw_json
+		WHERE excluded.last_seq = 0
+		   OR excluded.last_seq >= agent_runtime_states.last_seq`,
 		provider, sessionID, NullString(input.TaskSlug), status, eventKind,
-		NullString(input.Message), NowISO(), NullString(input.RawJSON),
+		NullString(input.Message), NowISO(), input.Seq, NullString(input.RawJSON),
 	)
 	return err
 }
@@ -314,13 +331,13 @@ func AgentRuntimeStateBySessionID(db *sql.DB, provider, sessionID string) (*Agen
 		return nil, sql.ErrNoRows
 	}
 	row := db.QueryRow(
-		`SELECT provider, session_id, task_slug, status, event_kind, message, updated_at, raw_json
+		`SELECT provider, session_id, task_slug, status, event_kind, message, updated_at, last_seq, raw_json
 		 FROM agent_runtime_states
 		 WHERE provider = ? AND session_id = ?`,
 		provider, sessionID,
 	)
 	var state AgentRuntimeState
-	if err := row.Scan(&state.Provider, &state.SessionID, &state.TaskSlug, &state.Status, &state.EventKind, &state.Message, &state.UpdatedAt, &state.RawJSON); err != nil {
+	if err := row.Scan(&state.Provider, &state.SessionID, &state.TaskSlug, &state.Status, &state.EventKind, &state.Message, &state.UpdatedAt, &state.LastSeq, &state.RawJSON); err != nil {
 		return nil, err
 	}
 	return &state, nil
@@ -397,7 +414,7 @@ func SetAutomationRuleMode(db *sql.DB, source, kind, mode string) error {
 
 func scanMonitorEvent(row interface{ Scan(dest ...any) error }) (*MonitorEvent, error) {
 	var e MonitorEvent
-	if err := row.Scan(&e.ID, &e.Source, &e.Kind, &e.SourceID, &e.Title, &e.Body, &e.URL, &e.Severity, &e.Status, &e.FirstSeenAt, &e.LastSeenAt, &e.RawJSON); err != nil {
+	if err := row.Scan(&e.ID, &e.Source, &e.Kind, &e.SourceID, &e.Title, &e.Body, &e.URL, &e.Severity, &e.Status, &e.FirstSeenAt, &e.LastSeenAt, &e.LastSeq, &e.RawJSON); err != nil {
 		return nil, err
 	}
 	return &e, nil

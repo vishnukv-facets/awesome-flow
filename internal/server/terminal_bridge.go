@@ -265,6 +265,10 @@ func terminalEnv(flowRoot, commandPath string) []string {
 	env = setEnvValue(env, "CLAUDE_CODE_DISABLE_MOUSE", "1")
 	env = appendEnvDefault(env, "LANG", "en_US.UTF-8")
 	env = appendEnvDefault(env, "LC_CTYPE", "en_US.UTF-8")
+	// Mark this PTY as flow-spawned for the agent-event hook (see
+	// internal/app/hook.go injectHookMetadata). Lets the server tell
+	// apart flow-managed sessions from ambient agents in the same repo.
+	env = setEnvValue(env, "FLOW_HOOK_OWNED", "1")
 	if root := strings.TrimSpace(flowRoot); root != "" {
 		env = setEnvValue(env, "FLOW_ROOT", root)
 	} else if root := os.Getenv("FLOW_ROOT"); root != "" {

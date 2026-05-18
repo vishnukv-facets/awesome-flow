@@ -3,6 +3,7 @@ package flowdb
 
 import (
 	"database/sql"
+	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -49,6 +50,7 @@ CREATE TABLE IF NOT EXISTS tasks (
     status                TEXT NOT NULL DEFAULT 'backlog' CHECK (status IN ('backlog','in-progress','done')),
     kind                  TEXT NOT NULL DEFAULT 'regular' CHECK (kind IN ('regular','playbook_run')),
     playbook_slug         TEXT REFERENCES playbooks(slug),
+    parent_slug           TEXT REFERENCES tasks(slug),
     priority              TEXT NOT NULL DEFAULT 'medium' CHECK (priority IN ('high','medium','low')),
     work_dir              TEXT NOT NULL,
     waiting_on            TEXT,
@@ -61,6 +63,7 @@ CREATE TABLE IF NOT EXISTS tasks (
     session_started       TEXT,
     session_last_resumed  TEXT,
     worktree_path         TEXT,
+    inbox_seen_at         TEXT,
     created_at            TEXT NOT NULL,
     updated_at            TEXT NOT NULL,
     archived_at           TEXT,
@@ -96,6 +99,7 @@ CREATE TABLE IF NOT EXISTS monitor_events (
     status         TEXT NOT NULL DEFAULT 'new' CHECK (status IN ('new','notified','approved','ignored','started','done')),
     first_seen_at  TEXT NOT NULL,
     last_seen_at   TEXT NOT NULL,
+    last_seq       INTEGER NOT NULL DEFAULT 0,
     raw_json       TEXT,
     UNIQUE(source, source_id)
 );
@@ -120,10 +124,11 @@ CREATE TABLE IF NOT EXISTS agent_runtime_states (
     provider     TEXT NOT NULL CHECK (provider IN ('claude','codex')),
     session_id   TEXT NOT NULL,
     task_slug    TEXT REFERENCES tasks(slug) ON DELETE SET NULL,
-    status       TEXT NOT NULL CHECK (status IN ('running','waiting','idle','dead')),
+    status       TEXT NOT NULL CHECK (status IN ('running','waiting','idle','dead','released')),
     event_kind   TEXT NOT NULL,
     message      TEXT,
     updated_at   TEXT NOT NULL,
+    last_seq     INTEGER NOT NULL DEFAULT 0,
     raw_json     TEXT,
     PRIMARY KEY (provider, session_id)
 );
@@ -207,6 +212,7 @@ type Task struct {
 	Status             string
 	Kind               string         // 'regular' | 'playbook_run'
 	PlaybookSlug       sql.NullString // set when Kind='playbook_run'
+	ParentSlug         sql.NullString // set by `flow spawn --parent`
 	Priority           string
 	WorkDir            string
 	WaitingOn          sql.NullString
@@ -219,6 +225,7 @@ type Task struct {
 	SessionStarted     sql.NullString
 	SessionLastResumed sql.NullString
 	WorktreePath       sql.NullString
+	InboxSeenAt        sql.NullString // bumped when SessionStart consumes inbox.md
 	CreatedAt          string
 	UpdatedAt          string
 	ArchivedAt         sql.NullString
@@ -246,6 +253,7 @@ type AgentRuntimeState struct {
 	EventKind string
 	Message   sql.NullString
 	UpdatedAt string
+	LastSeq   int64
 	RawJSON   sql.NullString
 }
 
@@ -319,10 +327,20 @@ func NormalizeSessionProvider(provider string) (string, error) {
 
 // OpenDB opens (or creates) the SQLite database at path, ensures the
 // schema is present, and runs idempotent migrations.
+//
+// busy_timeout = 30s covers a worst-case migration-rebuild path running
+// concurrently with another OpenDB on the same file (e.g. two flow do
+// goroutines starting from a fresh DB). Without it, SQLite's default
+// "fail immediately on a locked DB" would surface as SQLITE_BUSY during
+// schema or migration application.
 func OpenDB(path string) (*sql.DB, error) {
 	db, err := sql.Open("sqlite", path)
 	if err != nil {
 		return nil, fmt.Errorf("open sqlite %s: %w", path, err)
+	}
+	if _, err := db.Exec("PRAGMA busy_timeout = 30000"); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("set busy_timeout: %w", err)
 	}
 	if _, err := db.Exec("PRAGMA foreign_keys = ON"); err != nil {
 		db.Close()
@@ -447,6 +465,50 @@ func runMigrations(db *sql.DB) error {
 				return fmt.Errorf("add %s.deleted_at: %w", table, err)
 			}
 		}
+	}
+
+	// last_seq columns for monotonic ordering of hook events. The agent
+	// harness only stamps RFC3339 timestamps which collide on bursty
+	// writes; the agent-side seq (time.UnixNano) breaks ties unambiguously.
+	for _, table := range []string{"monitor_events", "agent_runtime_states"} {
+		has, err = columnExists(db, table, "last_seq")
+		if err != nil {
+			return err
+		}
+		if !has {
+			if _, err := db.Exec(fmt.Sprintf(`ALTER TABLE %s ADD COLUMN last_seq INTEGER NOT NULL DEFAULT 0`, table)); err != nil {
+				return fmt.Errorf("add %s.last_seq: %w", table, err)
+			}
+		}
+	}
+
+	// parent_slug + inbox_seen_at: parent-child task linkage (flow spawn)
+	// and SessionStart inbox detection (flow tell). Both nullable; no
+	// table rebuild needed.
+	has, err = columnExists(db, "tasks", "parent_slug")
+	if err != nil {
+		return err
+	}
+	if !has {
+		if _, err := db.Exec(`ALTER TABLE tasks ADD COLUMN parent_slug TEXT REFERENCES tasks(slug)`); err != nil {
+			return fmt.Errorf("add tasks.parent_slug: %w", err)
+		}
+	}
+	has, err = columnExists(db, "tasks", "inbox_seen_at")
+	if err != nil {
+		return err
+	}
+	if !has {
+		if _, err := db.Exec(`ALTER TABLE tasks ADD COLUMN inbox_seen_at TEXT`); err != nil {
+			return fmt.Errorf("add tasks.inbox_seen_at: %w", err)
+		}
+	}
+
+	// agent_runtime_states.status: add 'released' value (graceful SessionEnd
+	// vs 'idle' for between-turn pause). SQLite cannot widen a CHECK
+	// constraint in place — see migrateAgentRuntimeStatesAllowReleased.
+	if err := migrateAgentRuntimeStatesAllowReleased(db); err != nil {
+		return fmt.Errorf("migrate agent_runtime_states.status: %w", err)
 	}
 
 	// Session-id invariant: any non-backlog Claude task must have a
@@ -739,6 +801,90 @@ func migrateTasksSessionInvariant(db *sql.DB) error {
 	return nil
 }
 
+// migrateAgentRuntimeStatesAllowReleased widens the status CHECK
+// constraint on agent_runtime_states to include 'released'. SQLite
+// cannot alter a CHECK constraint in place, so we rebuild the table via
+// the documented CREATE-new + copy + DROP + RENAME procedure. Idempotent:
+// probes the current DDL for the 'released' literal and skips if already
+// present.
+func migrateAgentRuntimeStatesAllowReleased(db *sql.DB) error {
+	var ddl string
+	if err := db.QueryRow(
+		`SELECT sql FROM sqlite_master WHERE type='table' AND name='agent_runtime_states'`,
+	).Scan(&ddl); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil
+		}
+		return fmt.Errorf("inspect agent_runtime_states ddl: %w", err)
+	}
+	if strings.Contains(ddl, "'released'") {
+		return nil
+	}
+
+	if _, err := db.Exec(`PRAGMA foreign_keys = OFF`); err != nil {
+		return fmt.Errorf("disable fk: %w", err)
+	}
+	defer func() { _, _ = db.Exec(`PRAGMA foreign_keys = ON`) }()
+
+	tx, err := db.Begin()
+	if err != nil {
+		return fmt.Errorf("begin: %w", err)
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			_ = tx.Rollback()
+		}
+	}()
+
+	if _, err := tx.Exec(`
+		CREATE TABLE agent_runtime_states_new (
+			provider     TEXT NOT NULL CHECK (provider IN ('claude','codex')),
+			session_id   TEXT NOT NULL,
+			task_slug    TEXT REFERENCES tasks(slug) ON DELETE SET NULL,
+			status       TEXT NOT NULL CHECK (status IN ('running','waiting','idle','dead','released')),
+			event_kind   TEXT NOT NULL,
+			message      TEXT,
+			updated_at   TEXT NOT NULL,
+			last_seq     INTEGER NOT NULL DEFAULT 0,
+			raw_json     TEXT,
+			PRIMARY KEY (provider, session_id)
+		)`); err != nil {
+		return fmt.Errorf("create agent_runtime_states_new: %w", err)
+	}
+	if _, err := tx.Exec(`
+		INSERT INTO agent_runtime_states_new (
+			provider, session_id, task_slug, status, event_kind, message,
+			updated_at, last_seq, raw_json
+		)
+		SELECT
+			provider, session_id, task_slug, status, event_kind, message,
+			updated_at, COALESCE(last_seq, 0), raw_json
+		FROM agent_runtime_states`); err != nil {
+		return fmt.Errorf("copy rows: %w", err)
+	}
+	if _, err := tx.Exec(`DROP TABLE agent_runtime_states`); err != nil {
+		return fmt.Errorf("drop old: %w", err)
+	}
+	if _, err := tx.Exec(`ALTER TABLE agent_runtime_states_new RENAME TO agent_runtime_states`); err != nil {
+		return fmt.Errorf("rename: %w", err)
+	}
+	for _, idx := range []string{
+		`CREATE INDEX IF NOT EXISTS idx_agent_runtime_states_task ON agent_runtime_states(task_slug)`,
+		`CREATE INDEX IF NOT EXISTS idx_agent_runtime_states_updated ON agent_runtime_states(updated_at)`,
+	} {
+		if _, err := tx.Exec(idx); err != nil {
+			return fmt.Errorf("recreate index: %w", err)
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit: %w", err)
+	}
+	committed = true
+	return nil
+}
+
 func columnExists(db *sql.DB, table, column string) (bool, error) {
 	rows, err := db.Query(fmt.Sprintf(`PRAGMA table_info(%s)`, table))
 	if err != nil {
@@ -816,15 +962,15 @@ func ListProjects(db *sql.DB, filter ProjectFilter) ([]*Project, error) {
 
 // ---------- task queries ----------
 
-const TaskCols = "slug, name, project_slug, status, kind, playbook_slug, priority, work_dir, waiting_on, due_date, assignee, permission_mode, status_changed_at, session_provider, session_id, session_started, session_last_resumed, worktree_path, created_at, updated_at, archived_at, deleted_at"
+const TaskCols = "slug, name, project_slug, status, kind, playbook_slug, parent_slug, priority, work_dir, waiting_on, due_date, assignee, permission_mode, status_changed_at, session_provider, session_id, session_started, session_last_resumed, worktree_path, inbox_seen_at, created_at, updated_at, archived_at, deleted_at"
 
 func ScanTask(row interface{ Scan(dest ...any) error }) (*Task, error) {
 	var t Task
 	err := row.Scan(
-		&t.Slug, &t.Name, &t.ProjectSlug, &t.Status, &t.Kind, &t.PlaybookSlug,
+		&t.Slug, &t.Name, &t.ProjectSlug, &t.Status, &t.Kind, &t.PlaybookSlug, &t.ParentSlug,
 		&t.Priority, &t.WorkDir,
 		&t.WaitingOn, &t.DueDate, &t.Assignee, &t.PermissionMode, &t.StatusChangedAt, &t.SessionProvider, &t.SessionID,
-		&t.SessionStarted, &t.SessionLastResumed, &t.WorktreePath, &t.CreatedAt, &t.UpdatedAt, &t.ArchivedAt, &t.DeletedAt,
+		&t.SessionStarted, &t.SessionLastResumed, &t.WorktreePath, &t.InboxSeenAt, &t.CreatedAt, &t.UpdatedAt, &t.ArchivedAt, &t.DeletedAt,
 	)
 	if err != nil {
 		return nil, err

@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 	"unicode"
@@ -19,6 +20,18 @@ const (
 	agentTranscriptMonitorSource = "agent_transcript"
 )
 
+// CurrentHookVersion is bumped whenever the agent-event hook wire format
+// or contract changes in a way that older installed copies should be
+// nudged to upgrade. The installer in internal/agenthooks stamps this
+// value via `--hook-version` into every registered hook command line;
+// when the server ingests a hook payload tagged with a lower version it
+// surfaces an upgrade hint at the next SessionStart.
+//
+// Bumped to 3 when the SessionStart hook added inbox-message detection
+// (appendInboxHint in internal/app/hook.go) — old installs still work,
+// they just don't surface the INBOX UPDATED nudge.
+const CurrentHookVersion = 3
+
 type agentHookIngestResponse struct {
 	OK             bool   `json:"ok"`
 	Provider       string `json:"provider,omitempty"`
@@ -27,6 +40,11 @@ type agentHookIngestResponse struct {
 	SessionID      string `json:"session_id,omitempty"`
 	Task           string `json:"task,omitempty"`
 	NotificationID string `json:"notification_id,omitempty"`
+	Seq            int64  `json:"seq,omitempty"`
+	HookOwned      bool   `json:"hook_owned,omitempty"`
+	HookVersion    int    `json:"hook_version,omitempty"`
+	SubagentID     string `json:"subagent_id,omitempty"`
+	HookOutdated   bool   `json:"hook_outdated,omitempty"`
 }
 
 func (s *Server) handleAgentHook(w http.ResponseWriter, r *http.Request) {
@@ -64,12 +82,25 @@ func (s *Server) ingestAgentHook(r *http.Request, payload map[string]any, raw st
 	if kind == "" {
 		kind = normalizeAgentHookPart(eventName)
 	}
+	// Side-band metadata stamped by `flow hook agent-event`. Older hook
+	// installs that don't set these fields fall back to 0/false, which
+	// the upserts treat as "no opinion" and apply unconditionally.
+	seq := agentHookInt64(payload, "flow_seq", "flowSeq")
+	hookOwned := agentHookBool(payload, "flow_hook_owned", "flowHookOwned")
+	hookVersion := agentHookInt(payload, "flow_hook_version", "flowHookVersion")
+	subagentID := agentHookString(payload, "agent_id", "agentID", "subagent_id", "subagentID")
+
 	resp := agentHookIngestResponse{
-		OK:        true,
-		Provider:  provider,
-		Event:     eventName,
-		Kind:      kind,
-		SessionID: sessionID,
+		OK:           true,
+		Provider:     provider,
+		Event:        eventName,
+		Kind:         kind,
+		SessionID:    sessionID,
+		Seq:          seq,
+		HookOwned:    hookOwned,
+		HookVersion:  hookVersion,
+		SubagentID:   subagentID,
+		HookOutdated: hookVersion > 0 && hookVersion < CurrentHookVersion,
 	}
 	if sessionID != "" {
 		if task, err := flowdb.TaskBySessionID(s.cfg.DB, sessionID); err == nil {
@@ -77,7 +108,12 @@ func (s *Server) ingestAgentHook(r *http.Request, payload map[string]any, raw st
 		}
 	}
 	body := agentHookBody(payload)
-	if runtimeStatus := agentHookRuntimeStatus(kind); runtimeStatus != "" && sessionID != "" {
+	// Subagent stop/start events don't represent the parent agent's state.
+	// Recording them on agent_runtime_states would flicker the parent
+	// between idle and running. We still log them to monitor_events so the
+	// UI can show subagent activity per-task; we just don't flip the
+	// session-level state.
+	if runtimeStatus := agentHookRuntimeStatus(kind); runtimeStatus != "" && sessionID != "" && !isSubagentEvent(kind, subagentID) {
 		if err := flowdb.UpsertAgentRuntimeState(s.cfg.DB, flowdb.AgentRuntimeStateInput{
 			Provider:  provider,
 			SessionID: sessionID,
@@ -85,16 +121,18 @@ func (s *Server) ingestAgentHook(r *http.Request, payload map[string]any, raw st
 			Status:    runtimeStatus,
 			EventKind: kind,
 			Message:   body,
+			Seq:       seq,
 			RawJSON:   raw,
 		}); err != nil {
 			return agentHookIngestResponse{}, err
 		}
 	}
 
-	if agentHookClearsAttention(eventName, payload) && sessionID != "" {
+	if agentHookClearsAttention(eventName, payload) && sessionID != "" && !isSubagentEvent(kind, subagentID) {
 		_ = s.clearAgentHookAttention(provider, sessionID)
 	}
 	if agentHookIsLowValueEvent(kind) {
+		s.publishHookEvent(resp, payload)
 		return resp, nil
 	}
 
@@ -108,6 +146,7 @@ func (s *Server) ingestAgentHook(r *http.Request, payload map[string]any, raw st
 		Body:     body,
 		URL:      agentHookURL(resp.Task),
 		Severity: agentHookSeverity(kind),
+		Seq:      seq,
 		RawJSON:  raw,
 	})
 	if err != nil {
@@ -120,7 +159,20 @@ func (s *Server) ingestAgentHook(r *http.Request, payload map[string]any, raw st
 		}
 		resp.NotificationID = "notif-" + event.ID
 	}
+	s.publishHookEvent(resp, payload)
 	return resp, nil
+}
+
+// isSubagentEvent returns true for events emitted by a Claude subagent (a
+// nested agent_id is set) — these must not flip the parent's session
+// state or clear parent-owned attention rows. SubagentStart/SubagentStop
+// kinds are always subagent-scoped regardless of payload shape.
+func isSubagentEvent(kind, subagentID string) bool {
+	switch kind {
+	case "subagent_start", "subagent_stop":
+		return true
+	}
+	return strings.TrimSpace(subagentID) != ""
 }
 
 func (s *Server) clearAgentHookAttention(provider, sessionID string) error {
@@ -565,11 +617,28 @@ func agentHookRuntimeStatus(kind string) string {
 	switch kind {
 	case "permission_request", "permission_prompt", "elicitation", "elicitation_dialog", "idle_prompt":
 		return "waiting"
-	case "stop", "session_end", "task_completed":
+	case "stop", "task_completed":
+		// Stop is between-turn: the agent finished a turn and is waiting
+		// for the next user input. Session is resumable; the session_id
+		// stays useful for `flow do <slug>`.
 		return "idle"
+	case "session_start":
+		// SessionStart fires when the host opens a fresh or resumed session.
+		// At that instant the agent is sitting at the prompt waiting for the
+		// user's next input — not actively running. Marking this as
+		// "running" pins the session to running indefinitely when no later
+		// hooks fire (e.g., user opens the session and walks away).
+		return "idle"
+	case "session_end":
+		// SessionEnd is terminal: the user :q'd, the process exited, or
+		// the host tore the session down. The session_id is no longer
+		// resumable — a future flow do should spawn fresh rather than
+		// pass --resume against a dead transcript. UI surfaces this
+		// distinctly from idle.
+		return "released"
 	case "stop_failure":
 		return "dead"
-	case "session_start", "subagent_start", "subagent_stop", "task_created", "user_prompt_submit", "pre_tool_use", "post_tool_use", "post_tool_use_failure", "post_tool_batch", "elicitation_result", "permission_denied":
+	case "subagent_start", "subagent_stop", "task_created", "user_prompt_submit", "pre_tool_use", "post_tool_use", "post_tool_use_failure", "post_tool_batch", "elicitation_result", "permission_denied":
 		return "running"
 	default:
 		return ""
@@ -716,6 +785,55 @@ func agentHookSourceID(provider, sessionID, kind string, payload map[string]any)
 
 func agentHookSourceIDPrefix(provider, sessionID string) string {
 	return provider + ":" + sessionID + ":"
+}
+
+func agentHookInt64(payload map[string]any, keys ...string) int64 {
+	for _, key := range keys {
+		v, ok := payload[key]
+		if !ok {
+			continue
+		}
+		switch n := v.(type) {
+		case float64:
+			return int64(n)
+		case int:
+			return int64(n)
+		case int64:
+			return n
+		case json.Number:
+			if i, err := n.Int64(); err == nil {
+				return i
+			}
+		case string:
+			if i, err := strconv.ParseInt(strings.TrimSpace(n), 10, 64); err == nil {
+				return i
+			}
+		}
+	}
+	return 0
+}
+
+func agentHookInt(payload map[string]any, keys ...string) int {
+	return int(agentHookInt64(payload, keys...))
+}
+
+func agentHookBool(payload map[string]any, keys ...string) bool {
+	for _, key := range keys {
+		v, ok := payload[key]
+		if !ok {
+			continue
+		}
+		switch b := v.(type) {
+		case bool:
+			return b
+		case string:
+			s := strings.ToLower(strings.TrimSpace(b))
+			return s == "true" || s == "1" || s == "yes"
+		case float64:
+			return b != 0
+		}
+	}
+	return false
 }
 
 func agentHookString(payload map[string]any, keys ...string) string {

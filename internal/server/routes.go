@@ -249,9 +249,6 @@ func (s *Server) handleTasks(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleTaskRoute(w http.ResponseWriter, r *http.Request) {
-	if !getOnly(w, r) {
-		return
-	}
 	parts, ok := routeParts(w, r, "/api/tasks/")
 	if !ok {
 		return
@@ -264,6 +261,19 @@ func (s *Server) handleTaskRoute(w http.ResponseWriter, r *http.Request) {
 	task, err := flowdb.GetTask(s.cfg.DB, slug)
 	if err != nil {
 		writeNotFoundOrError(w, err)
+		return
+	}
+	// /inbox accepts GET and POST. /lifecycle accepts GET. Everything
+	// else is GET-only and falls under the legacy gate below.
+	if len(parts) == 2 && parts[1] == "inbox" {
+		s.handleTaskInbox(w, r, task)
+		return
+	}
+	if len(parts) == 2 && parts[1] == "lifecycle" {
+		s.handleTaskLifecycle(w, r, task)
+		return
+	}
+	if !getOnly(w, r) {
 		return
 	}
 	switch {

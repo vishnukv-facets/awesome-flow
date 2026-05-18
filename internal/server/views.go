@@ -32,12 +32,14 @@ func BuildTaskView(db *sql.DB, root string, t *flowdb.Task, live map[string]bool
 	}
 	view.ProjectSlug = nullStringPtr(t.ProjectSlug)
 	view.PlaybookSlug = nullStringPtr(t.PlaybookSlug)
+	view.ParentSlug = nullStringPtr(t.ParentSlug)
 	view.WaitingOn = nullStringPtr(t.WaitingOn)
 	view.DueDate = nullStringPtr(t.DueDate)
 	view.Assignee = nullStringPtr(t.Assignee)
 	view.SessionID = nullStringPtr(t.SessionID)
 	view.SessionStarted = nullStringPtr(t.SessionStarted)
 	view.SessionLastResumed = nullStringPtr(t.SessionLastResumed)
+	view.InboxSeenAt = nullStringPtr(t.InboxSeenAt)
 	view.ArchivedAt = nullStringPtr(t.ArchivedAt)
 	view.DeletedAt = nullStringPtr(t.DeletedAt)
 	provider := t.SessionProvider
@@ -83,7 +85,58 @@ func BuildTaskView(db *sql.DB, root string, t *flowdb.Task, live map[string]bool
 	if view.AuxFiles == nil {
 		view.AuxFiles = []FileRef{}
 	}
+
+	// Inbox: stat the file, count unread relative to inbox_seen_at.
+	// Cheap: one stat + one file scan only when inbox exists.
+	inboxFile := filepath.Join(root, "tasks", t.Slug, "inbox.md")
+	if _, err := os.Stat(inboxFile); err == nil {
+		view.InboxPath = inboxFile
+		if entries, _ := readInboxEntries(inboxFile); entries != nil {
+			view.InboxUnreadCount = unreadInboxCount(t, entries)
+		}
+	}
+
+	// Children: tasks whose parent_slug points at this task. Cheap one-shot
+	// query per detail view; skipped if this is itself a child.
+	view.Children = loadChildren(db, t.Slug)
+
+	// Runtime status: latest agent_runtime_states row for this session.
+	// Surfaces in UI as the chip next to the task status.
+	if t.SessionID.Valid && t.SessionID.String != "" {
+		if state, err := flowdb.AgentRuntimeStateBySessionID(db, provider, t.SessionID.String); err == nil {
+			rs := state.Status
+			view.RuntimeStatus = &rs
+		}
+	}
 	return view, nil
+}
+
+func loadChildren(db *sql.DB, parentSlug string) []TaskSummary {
+	rows, err := db.Query(
+		`SELECT slug, name, status, priority, project_slug, updated_at
+		 FROM tasks
+		 WHERE parent_slug = ? AND deleted_at IS NULL
+		 ORDER BY created_at ASC`,
+		parentSlug,
+	)
+	if err != nil {
+		return nil
+	}
+	defer rows.Close()
+	var out []TaskSummary
+	for rows.Next() {
+		var s TaskSummary
+		var proj sql.NullString
+		if err := rows.Scan(&s.Slug, &s.Name, &s.Status, &s.Priority, &proj, &s.UpdatedAt); err != nil {
+			return out
+		}
+		if proj.Valid {
+			v := proj.String
+			s.ProjectSlug = &v
+		}
+		out = append(out, s)
+	}
+	return out
 }
 
 func BuildTaskViews(db *sql.DB, root string, tasks []*flowdb.Task) ([]TaskView, error) {

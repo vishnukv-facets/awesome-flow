@@ -8,13 +8,21 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 )
 
 const (
 	installedFlowPath = "flow"
-	ClaudeCommand     = installedFlowPath + " hook agent-event --provider claude"
-	CodexCommand      = installedFlowPath + " hook agent-event --provider codex"
+	// CurrentHookVersion is bumped whenever the wire format or
+	// per-hook behavior changes in a way that older installed copies
+	// should re-install. Stamped into every registered hook command
+	// as `--hook-version N`; the server reads it back from the hook
+	// payload and surfaces an upgrade hint at the next SessionStart
+	// when a session's command is below this value.
+	CurrentHookVersion = 3
+	ClaudeCommand      = installedFlowPath + " hook agent-event --provider claude"
+	CodexCommand       = installedFlowPath + " hook agent-event --provider codex"
 )
 
 type InstallOptions struct {
@@ -22,46 +30,14 @@ type InstallOptions struct {
 	HookURL     string
 }
 
-type spec struct {
-	event   string
-	matcher string
-}
-
-var claudeHooks = []spec{
-	{event: "SessionStart", matcher: "startup|resume"},
-	{event: "UserPromptSubmit"},
-	{event: "PermissionRequest"},
-	{event: "PermissionDenied"},
-	{event: "Notification"},
-	{event: "Elicitation"},
-	{event: "ElicitationResult"},
-	{event: "PreToolUse", matcher: "AskUserQuestion|ExitPlanMode"},
-	{event: "PostToolUse"},
-	{event: "PostToolUseFailure"},
-	{event: "PostToolBatch"},
-	{event: "Stop"},
-	{event: "StopFailure"},
-	{event: "SessionEnd"},
-	{event: "TeammateIdle"},
-	{event: "SubagentStart"},
-	{event: "SubagentStop"},
-	{event: "TaskCreated"},
-	{event: "TaskCompleted"},
-}
-
-var codexHooks = []spec{
-	{event: "SessionStart", matcher: "startup|resume|clear"},
-	{event: "UserPromptSubmit"},
-	{event: "PreToolUse"},
-	{event: "PermissionRequest"},
-	{event: "PostToolUse"},
-	{event: "Stop"},
-}
-
 func InstallLocal(workDir string) (bool, error) {
 	return InstallLocalWithOptions(workDir, InstallOptions{})
 }
 
+// InstallLocalWithOptions installs (or upgrades) every registered
+// Provider's hook entries into workDir. Adding a new agent host means
+// implementing the Provider interface and registering it; this
+// installer does not need to change.
 func InstallLocalWithOptions(workDir string, opts InstallOptions) (bool, error) {
 	root := strings.TrimSpace(workDir)
 	if root == "" {
@@ -78,24 +54,17 @@ func InstallLocalWithOptions(workDir string, opts InstallOptions) (bool, error) 
 	}
 
 	changed := false
-	claudeCommand, codexCommand := hookCommands(opts)
-	claudePath := filepath.Join(abs, ".claude", "settings.local.json")
-	for _, hook := range claudeHooks {
-		added, err := installHook(claudePath, hook.event, hook.matcher, claudeCommand, nil)
-		if err != nil {
-			return changed, err
+	for _, p := range Providers() {
+		file := p.HookFile(abs)
+		command := p.HookCommand(opts)
+		extras := p.Extras()
+		for _, hook := range p.Events() {
+			added, err := installHook(file, hook.Event, hook.Matcher, command, extras)
+			if err != nil {
+				return changed, err
+			}
+			changed = changed || added
 		}
-		changed = changed || added
-	}
-
-	codexPath := filepath.Join(abs, ".codex", "hooks.json")
-	codexExtras := map[string]any{"timeout": 3, "statusMessage": "Syncing flow status"}
-	for _, hook := range codexHooks {
-		added, err := installHook(codexPath, hook.event, hook.matcher, codexCommand, codexExtras)
-		if err != nil {
-			return changed, err
-		}
-		changed = changed || added
 	}
 	if err := excludeLocalHookFiles(abs); err != nil {
 		return changed, err
@@ -159,14 +128,29 @@ func InstallKnownWorkdirsWithOptions(db *sql.DB, opts InstallOptions) (int, erro
 	return changed, errors.Join(errs...)
 }
 
-func hookCommands(opts InstallOptions) (string, string) {
-	base := installedFlowPath
-	suffix := ""
-	if hookURL := strings.TrimSpace(opts.HookURL); hookURL != "" {
-		suffix = " --url " + shellQuoteArg(hookURL)
+// HookVersionFromCommand extracts the --hook-version N value from an
+// installed hook command line, or 0 if the flag isn't present. Used by
+// installation status reporting and by sameManagedAgentHookCommand
+// matching, which must treat any flow-managed hook command as a
+// candidate for in-place upgrade regardless of stamped version.
+func HookVersionFromCommand(command string) int {
+	fields := strings.Fields(command)
+	for i, field := range fields {
+		field = strings.Trim(field, `"'`)
+		if field == "--hook-version" && i+1 < len(fields) {
+			if n, err := strconv.Atoi(strings.Trim(fields[i+1], `"'`)); err == nil {
+				return n
+			}
+			return 0
+		}
+		if rest, ok := strings.CutPrefix(field, "--hook-version="); ok {
+			if n, err := strconv.Atoi(strings.Trim(rest, `"'`)); err == nil {
+				return n
+			}
+			return 0
+		}
 	}
-	return base + " hook agent-event --provider claude" + suffix,
-		base + " hook agent-event --provider codex" + suffix
+	return 0
 }
 
 func installHook(path, event, matcher, command string, extras map[string]any) (bool, error) {

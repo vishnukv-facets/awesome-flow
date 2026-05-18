@@ -194,6 +194,16 @@ func cmdDo(args []string) int {
 		return 1
 	}
 	needsBootstrap := !hasSessionID(curSessionID) || *fresh || curProvider != provider
+	// Released sessions are terminal: SessionEnd fired, the transcript is
+	// no longer resumable. Treat as if --fresh were passed so we mint a
+	// new id rather than passing --resume against a dead session. The
+	// task's prior brief/updates stay intact; only the transport handle
+	// is rotated.
+	if !needsBootstrap && hasSessionID(curSessionID) {
+		if state, err := flowdb.AgentRuntimeStateBySessionID(db, curProvider, curSessionID.String); err == nil && state.Status == "released" {
+			needsBootstrap = true
+		}
+	}
 	var sessionID string
 	if needsBootstrap && provider == sessionProviderClaude {
 		id, err := newUUID()

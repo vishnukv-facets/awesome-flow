@@ -105,6 +105,13 @@ func flowSessionEnv(root string) map[string]string {
 	if path := pathWithFlowCommandDir(os.Getenv("PATH"), flowCommandPathForSpawn()); path != "" {
 		env["PATH"] = path
 	}
+	// FLOW_HOOK_OWNED marks the session as flow-spawned. The agent-event
+	// hook reads this env and stamps flow_hook_owned into the forwarded
+	// payload so the server can distinguish flow-managed sessions from
+	// ambient agents that happen to be running in a flow-installed
+	// workdir. We always set it on flow do spawns; never on the user's
+	// own claude/codex invocations.
+	env["FLOW_HOOK_OWNED"] = "1"
 	if len(env) == 0 {
 		return nil
 	}

@@ -22,6 +22,8 @@ var staticFS embed.FS
 func New(cfg Config) *Server {
 	s := &Server{cfg: cfg}
 	s.terminals = newTerminalHub(s)
+	s.events = newEventHub()
+	s.reconcile = newLivenessReconciler(s)
 	return s
 }
 
@@ -33,6 +35,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/events", s.handleUIEvents)
 	mux.HandleFunc("/api/actions", s.handleAction)
 	mux.HandleFunc("/api/hooks/agent", s.handleAgentHook)
+	mux.HandleFunc("/api/inbox/notify", s.handleInboxNotify)
 	mux.HandleFunc("/api/overview", s.handleOverview)
 	mux.HandleFunc("/api/fs/entries", s.handleFSEntries)
 	mux.HandleFunc("/api/tasks", s.handleTasks)
@@ -47,6 +50,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/kb/", s.handleKBFile)
 	mux.HandleFunc("/api/search", s.handleSearch)
 	mux.HandleFunc("/ws/terminal", s.handleTerminalWebSocket)
+	mux.HandleFunc("/ws/events", s.handleEventWebSocket)
 	mux.HandleFunc("/ws", s.handleWebSocketPlaceholder)
 	mux.HandleFunc("/", s.handleStatic)
 	return mux
@@ -57,6 +61,13 @@ func (s *Server) ListenAndServe(addr string) int {
 		Addr:              addr,
 		Handler:           s.Handler(),
 		ReadHeaderTimeout: 5 * time.Second,
+	}
+	// Start the liveness reconciler so dead Claude/Codex sessions get
+	// detected even when their Stop/SessionEnd hook never fires. Stops
+	// cleanly on shutdown via the deferred s.reconcile.stop().
+	if s.reconcile != nil {
+		s.reconcile.start()
+		defer s.reconcile.stop()
 	}
 	errCh := make(chan error, 1)
 	go func() {

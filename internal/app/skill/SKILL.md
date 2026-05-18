@@ -225,6 +225,26 @@ Workdirs
   flow workdir add <path> [--name <nickname>]   (captures origin remote if present)
   flow workdir remove <path>
   flow workdir scan [<root>] [--add]            (backfills origin remotes for detected repos)
+
+Orchestration (parent-child agents — see §4.17)
+  flow spawn <name> [--parent <slug>] [--prompt <text>] [--project <slug>]
+                    [--work-dir <path>] [--slug <s>] [--priority h|m|l]
+                    [--agent claude|codex] [--no-open]
+       Create a task (parent_slug auto-set when --parent is given) and
+       immediately open it in a new tab. The prompt becomes the task's
+       brief "What" section so the spawned agent starts with context.
+
+  flow tell <task-slug> "<message>" [--from <slug-or-label>]
+       Append a stamped message to ~/.flow/tasks/<slug>/inbox.md. The
+       receiving agent reads new entries at its next SessionStart and
+       acts on them. Use this to nudge a sibling task without spawning
+       a new conversation.
+
+  flow wait <task-slug> --until <state> [--timeout <dur>]
+       Block until the task reaches the requested state. <state> can be
+       a task lifecycle (backlog|in-progress|done) or an agent runtime
+       state (running|waiting|idle|dead|released). Uses /ws/events for
+       live updates; short-circuits when already in state.
 ```
 
 All references (`<ref>`) resolve by **exact slug match only**. There is
@@ -1519,6 +1539,124 @@ police these):
   in another tab.** The env var is per-process; `--here` always
   attaches the *current* session. To attach a session in another
   tab, switch to that tab and run `flow do --here` there.
+
+### 4.17 Delegate to a child task (orchestration)
+
+**Triggers:** "spawn a child to do X", "have another agent handle X
+while I keep going", "split this off into a parallel task", "delegate
+this part", "kick off Y in the background and tell me when it's done",
+"send a message to <task>", "wait for <task> to finish before I
+continue", or a bare `flow spawn|tell|wait` invocation.
+
+flow supports a small orchestration vocabulary so a parent agent can
+delegate self-contained work to a child agent in another tab,
+coordinate with a sibling task you're not actively driving, or block
+until something finishes. There is **no in-session pane sharing** the
+way herdr has — each agent gets its own tab, talks to siblings via
+durable filesystem channels, and signals state through the same
+`/ws/events` stream the UI consumes.
+
+**The three primitives:**
+
+| Command | Purpose | Synchronous? |
+|---|---|---|
+| `flow spawn <name> --parent <slug> --prompt "..."` | Create a child task with the parent linkage set and immediately open it in a new tab. The prompt becomes the child's brief What section. | No — fires the child off in its own tab |
+| `flow tell <slug> "..."` | Append a message to the receiving task's inbox.md; the bound agent picks it up at its next SessionStart. | No — receiver reads on next session turn |
+| `flow wait <slug> --until <state>` | Block the caller's terminal until the named task reaches the requested state. | Yes — blocks via WS subscription |
+
+**When to use which:**
+
+- **`spawn`** when the work is genuinely independent — a self-contained
+  investigation, a build, a long-running script, a code review. The
+  child gets its own brief, transcript, updates, and inbox.
+- **`tell`** when a sibling task already exists and you want to nudge
+  it with a follow-up instruction without spawning a new conversation.
+  The receiver doesn't get the message immediately — it lands on the
+  next session start (often after the receiver's current turn ends).
+- **`wait`** when you need to gate parent progress on a child's
+  completion. Prefer this over polling `flow show task` in a loop —
+  `wait` subscribes to the live event stream and exits the moment the
+  state changes.
+
+**Recipe — typical orchestration pattern:**
+
+```
+# (1) Delegate a self-contained subtask
+flow spawn "review-coverage" --parent oauth-budget \
+    --prompt "Audit test coverage in src/api/ and report gaps as an update on this task before closing"
+
+# (2) Continue parent work; later, block until child is done
+flow wait review-coverage --until done --timeout 30m
+
+# (3) Read what the child accomplished
+flow transcript review-coverage --compact
+# (the parent agent can also inspect ~/.flow/tasks/review-coverage/updates/)
+
+# (4) Mid-flight nudge — change scope before the child is done
+flow tell review-coverage "also check the legacy auth shim in src/legacy/"
+```
+
+**Triggers and proposals — what the parent agent should offer:**
+
+When the user describes a workflow that fits the spawn/tell/wait
+shape, surface the orchestration option via AskUserQuestion. Examples:
+
+- *"Can you also review the test coverage while you're at it?"* —
+  ambiguous between "do it inline" and "delegate to a child."
+  Use AskUserQuestion (header: "How to handle?", options:
+  "Do it here" / "Spawn a child task").
+- *"Run the migration script and tell me when it's done."* — long
+  blocking work the parent doesn't need to babysit. Propose
+  `flow spawn migration-run --prompt "..."` + `flow wait migration-run
+  --until done`.
+- *"Pass this note to the budget-task agent."* — explicit sibling
+  message. Run `flow tell budget-task "<note>"` directly; this is one
+  of the rare cases where the user has named the action AND the
+  target, so no further AskUserQuestion is needed.
+
+**Anti-patterns (orchestration-specific):**
+
+- **Do not spawn for tiny work.** If the subtask is one tool call or
+  one short answer, do it inline. Spawning creates a permanent task
+  row, a brief, and an entire transcript — overhead the user pays
+  forever in their list view. Spawn for work that has its own
+  meaningful "done" definition.
+- **Do not poll `flow show task` in a loop instead of using `flow
+  wait`.** Every poll is a DB hit and a token in your context;
+  `flow wait` is event-driven and costs nothing while idle.
+- **Do not `tell` an agent you expect to act immediately.** Inbox
+  delivery is async — the receiver sees the message at its next
+  SessionStart, which may not be for minutes. If you need a real-time
+  hand-off, use `flow spawn` for a fresh agent or wait for a turn
+  boundary on the sibling.
+- **Do not bypass the user's confirmation when proposing orchestration.**
+  If the work could plausibly be done inline OR delegated, ask via
+  AskUserQuestion. The user often prefers inline for quick tasks.
+- **Do not edit `parent_slug` by hand.** It's set by `flow spawn` at
+  creation time. To re-parent, use the future `flow update task --parent`
+  (not yet shipped — file an issue if you need it).
+
+**Reading children:**
+
+When the current bound task has children (visible in `flow show task`
+output under a `children:` section, or in the UI as a tree), and the
+user asks something like "what's status on the review-coverage task?",
+prefer one of:
+
+- `flow show task review-coverage` for the brief/updates/status
+- `flow transcript review-coverage --compact` for the recent dialog
+- `flow list tasks --parent <this-slug>` to scan all siblings
+
+**Inbox housekeeping:**
+
+When THIS task has unseen inbox entries, the SessionStart hook
+prepends an `INBOX UPDATED: <slug> has new message(s) ...` notice with
+the path to inbox.md. Read it BEFORE proceeding — those messages are
+typically the parent's adjustments to scope or instructions you
+haven't acted on yet. After reading, you don't need to do anything
+special; the column `tasks.inbox_seen_at` is already bumped to the
+inbox mtime by the hook, so the same messages won't re-fire on the
+next session start.
 
 ## 6. The `work_dir` question — rules
 

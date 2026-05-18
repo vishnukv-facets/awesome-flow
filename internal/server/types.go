@@ -13,6 +13,8 @@ type Config struct {
 type Server struct {
 	cfg       Config
 	terminals *terminalHub
+	events    *eventHub
+	reconcile *livenessReconciler
 }
 
 type HealthView struct {
@@ -63,6 +65,8 @@ type TaskView struct {
 	Status              string        `json:"status"`
 	Kind                string        `json:"kind"`
 	PlaybookSlug        *string       `json:"playbook_slug"`
+	ParentSlug          *string       `json:"parent_slug"`
+	Children            []TaskSummary `json:"children,omitempty"`
 	Priority            string        `json:"priority"`
 	WorkDir             string        `json:"work_dir"`
 	WorkdirKnown        *WorkdirKnown `json:"workdir_known"`
@@ -77,9 +81,13 @@ type TaskView struct {
 	SessionStarted      *string       `json:"session_started"`
 	SessionLastResumed  *string       `json:"session_last_resumed"`
 	Live                bool          `json:"live"`
+	RuntimeStatus       *string       `json:"runtime_status,omitempty"`
 	DaysInStatus        int           `json:"days_in_status"`
 	StaleDays           *int          `json:"stale_days"`
 	TemporalSummary     string        `json:"temporal_summary"`
+	InboxPath           string        `json:"inbox_path,omitempty"`
+	InboxUnreadCount    int           `json:"inbox_unread_count"`
+	InboxSeenAt         *string       `json:"inbox_seen_at,omitempty"`
 	CreatedAt           string        `json:"created_at"`
 	UpdatedAt           string        `json:"updated_at"`
 	ArchivedAt          *string       `json:"archived_at"`
@@ -88,6 +96,37 @@ type TaskView struct {
 	Updates             []FileRef     `json:"updates"`
 	AuxFiles            []FileRef     `json:"aux_files"`
 	TranscriptAvailable bool          `json:"transcript_available"`
+}
+
+// InboxEntry is one parsed message from a task's inbox.md.
+type InboxEntry struct {
+	Timestamp string `json:"timestamp"`
+	Sender    string `json:"sender"`
+	Body      string `json:"body"`
+}
+
+// InboxView is the GET /api/tasks/<slug>/inbox response shape.
+type InboxView struct {
+	Slug         string       `json:"slug"`
+	Path         string       `json:"path"`
+	UnreadCount  int          `json:"unread_count"`
+	SeenAt       *string      `json:"seen_at,omitempty"`
+	Entries      []InboxEntry `json:"entries"`
+}
+
+// LifecycleEvent is one row of the per-session event timeline.
+type LifecycleEvent struct {
+	Time     string `json:"time"`
+	Kind     string `json:"kind"`
+	Status   string `json:"status"`
+	Body     string `json:"body,omitempty"`
+	Severity string `json:"severity,omitempty"`
+}
+
+// LifecycleView is the GET /api/tasks/<slug>/lifecycle response shape.
+type LifecycleView struct {
+	Slug   string           `json:"slug"`
+	Events []LifecycleEvent `json:"events"`
 }
 
 type TaskSummary struct {

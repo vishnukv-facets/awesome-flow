@@ -3,6 +3,7 @@ package app
 import (
 	"bytes"
 	"encoding/json"
+	"flow/internal/agenthooks"
 	"flow/internal/flowdb"
 	"fmt"
 	"io"
@@ -106,7 +107,144 @@ func cmdHookSessionStart(args []string) int {
 		slug,
 	)
 
-	return emitSessionStartContext(instructions + appendStaleVersionHint())
+	inboxHint := appendInboxHint(slug)
+	return emitSessionStartContext(inboxHint + instructions + appendStaleHookHint(slug) + appendStaleVersionHint())
+}
+
+// appendInboxHint prepends an INBOX-UPDATED notice when ~/.flow/tasks/<slug>/
+// inbox.md has been modified since the task's last inbox_seen_at. After
+// emitting the notice it bumps tasks.inbox_seen_at so the same message
+// isn't re-flagged on every SessionStart for the rest of the session.
+//
+// Best-effort: any error (no DB, no file, mtime parse failure) returns ""
+// silently. SessionStart latency is on the user's critical path; an
+// errored hook would block the agent from starting.
+func appendInboxHint(slug string) string {
+	root, err := flowRoot()
+	if err != nil {
+		return ""
+	}
+	inboxPath := root + "/tasks/" + slug + "/inbox.md"
+	info, err := os.Stat(inboxPath)
+	if err != nil {
+		return ""
+	}
+	mtime := info.ModTime().UTC().Format(time.RFC3339)
+
+	dbPath, err := flowDBPath()
+	if err != nil {
+		return ""
+	}
+	db, err := flowdb.OpenDB(dbPath)
+	if err != nil {
+		return ""
+	}
+	defer db.Close()
+	task, err := flowdb.GetTask(db, slug)
+	if err != nil {
+		return ""
+	}
+	if task.InboxSeenAt.Valid && task.InboxSeenAt.String >= mtime {
+		return ""
+	}
+
+	// Bump inbox_seen_at so subsequent SessionStart hooks (e.g. claude
+	// resume after a turn) don't re-fire the same notice. Best-effort.
+	_, _ = db.Exec(`UPDATE tasks SET inbox_seen_at = ?, updated_at = ? WHERE slug = ?`,
+		mtime, flowdb.NowISO(), slug)
+
+	return fmt.Sprintf(
+		"INBOX UPDATED: %s has new message(s) since your last session. "+
+			"BEFORE doing anything else this turn, Read %s — these are "+
+			"instructions from your parent task or the user that you "+
+			"haven't acted on yet. Then proceed with your normal "+
+			"context reload below.\n\n",
+		slug, inboxPath,
+	)
+}
+
+// appendStaleHookHint nudges the agent to refresh repo-local hooks when
+// the installed --hook-version is below the current binary's expectation.
+// It probes the task's workdir for .claude/settings.local.json (the
+// repo-local hook file flow do installs) and parses the stamped version
+// out of any flow hook agent-event command. Best-effort: returns "" if
+// the file is missing, unparseable, or up to date. We must never block
+// session start on a parse error.
+func appendStaleHookHint(slug string) string {
+	dbPath, err := flowDBPath()
+	if err != nil {
+		return ""
+	}
+	db, err := flowdb.OpenDB(dbPath)
+	if err != nil {
+		return ""
+	}
+	defer db.Close()
+	task, err := flowdb.GetTask(db, slug)
+	if err != nil || strings.TrimSpace(task.WorkDir) == "" {
+		return ""
+	}
+	installed := minInstalledHookVersion(task.WorkDir)
+	if installed == 0 || installed >= agenthooks.CurrentHookVersion {
+		return ""
+	}
+	return fmt.Sprintf(
+		" flow-hook-stale: repo-local agent hooks for this workdir are at version %d "+
+			"but the running flow binary expects %d. Live status updates may miss "+
+			"events the new hook surface emits. At a natural pause, suggest the user "+
+			"refresh hooks (closing and re-opening this task with `flow do %s` will "+
+			"reinstall them automatically).",
+		installed, agenthooks.CurrentHookVersion, slug,
+	)
+}
+
+// minInstalledHookVersion returns the smallest --hook-version stamped on
+// any flow-installed agent-event hook entry in workDir. Returns 0 if no
+// flow hook is present or all entries pre-date the version flag.
+func minInstalledHookVersion(workDir string) int {
+	min := 0
+	for _, rel := range []string{".claude/settings.local.json", ".codex/hooks.json"} {
+		v := scanHookFileVersion(workDir + "/" + rel)
+		if v == 0 {
+			continue
+		}
+		if min == 0 || v < min {
+			min = v
+		}
+	}
+	return min
+}
+
+func scanHookFileVersion(path string) int {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return 0
+	}
+	var cfg map[string]any
+	if err := json.Unmarshal(raw, &cfg); err != nil {
+		return 0
+	}
+	hooks, _ := cfg["hooks"].(map[string]any)
+	min := 0
+	for _, groupRaw := range hooks {
+		groups, _ := groupRaw.([]any)
+		for _, g := range groups {
+			gm, _ := g.(map[string]any)
+			inner, _ := gm["hooks"].([]any)
+			for _, h := range inner {
+				hm, _ := h.(map[string]any)
+				cmd, _ := hm["command"].(string)
+				if !strings.Contains(cmd, "hook agent-event") {
+					continue
+				}
+				v := agenthooks.HookVersionFromCommand(cmd)
+				if v > 0 && (min == 0 || v < min) {
+					min = v
+				}
+			}
+		}
+	}
+	return min
 }
 
 // appendStaleVersionHint returns a short suffix to add to SessionStart
@@ -241,6 +379,7 @@ func cmdHookAgentEvent(args []string) int {
 	provider := fs.String("provider", "", "agent provider (claude|codex)")
 	apiURL := fs.String("url", "", "flow UI hook endpoint")
 	timeout := fs.Duration("timeout", 1500*time.Millisecond, "forward timeout")
+	hookVersion := fs.Int("hook-version", 0, "hook script version (set by installer)")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
@@ -257,6 +396,17 @@ func cmdHookAgentEvent(args []string) int {
 		debugAgentHook("invalid hook JSON")
 		return 0
 	}
+
+	// Inject side-band metadata into the payload before forwarding:
+	//   - flow_seq: monotonic time.UnixNano() for causal ordering on the
+	//     server (the agent harness only stamps RFC3339 timestamps, which
+	//     collide on bursty events and lose to goroutine scheduling jitter)
+	//   - flow_hook_owned: distinguishes flow-spawned sessions (FLOW_HOOK_OWNED=1
+	//     set by flow do) from ambient agents running in flow-managed repos
+	//   - flow_hook_version: installer-stamped version, lets the server detect
+	//     outdated hook entries and surface an upgrade hint at SessionStart
+	raw = injectHookMetadata(raw, *hookVersion)
+
 	endpoint := agentHookEndpoint(*apiURL, *provider)
 	req, err := http.NewRequest(http.MethodPost, endpoint, bytes.NewReader(raw))
 	if err != nil {
@@ -276,6 +426,29 @@ func cmdHookAgentEvent(args []string) int {
 		debugAgentHook("hook endpoint returned %s", resp.Status)
 	}
 	return 0
+}
+
+// injectHookMetadata stamps flow_seq, flow_hook_owned, and flow_hook_version
+// onto the hook JSON. Returns raw unchanged if the payload isn't a JSON
+// object — the server tolerates payloads without these fields and falls
+// back to last_seen_at ordering. We never overwrite an already-present
+// flow_seq so tests can inject deterministic values.
+func injectHookMetadata(raw []byte, hookVersion int) []byte {
+	var obj map[string]any
+	if err := json.Unmarshal(raw, &obj); err != nil || obj == nil {
+		return raw
+	}
+	if _, present := obj["flow_seq"]; !present {
+		obj["flow_seq"] = time.Now().UnixNano()
+	}
+	obj["flow_hook_owned"] = os.Getenv("FLOW_HOOK_OWNED") == "1"
+	if hookVersion > 0 {
+		obj["flow_hook_version"] = hookVersion
+	}
+	if out, err := json.Marshal(obj); err == nil {
+		return out
+	}
+	return raw
 }
 
 func agentHookEndpoint(rawURL, provider string) string {
