@@ -2,6 +2,7 @@ package app
 
 import (
 	"flow/internal/flowdb"
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -427,5 +428,202 @@ func TestCmdUpdateTaskClearAndAddTagsCombo(t *testing.T) {
 	tags, _ := flowdb.GetTaskTags(db, "ut-tag-combo")
 	if len(tags) != 1 || tags[0] != "fresh" {
 		t.Errorf("got %v, want [fresh]", tags)
+	}
+}
+
+// ---------- rename tests ----------
+
+// TestCmdUpdateProjectRenameSlugCascades verifies that renaming a
+// project's slug cascades the change through tasks.project_slug and
+// playbooks.project_slug, and that the ~/.flow/projects/<slug>/ dir
+// moves to match.
+func TestCmdUpdateProjectRenameSlugCascades(t *testing.T) {
+	root := setupFlowRoot(t)
+	wd := t.TempDir()
+	if rc := cmdAdd([]string{"project", "Old Name", "--slug", "old-proj", "--work-dir", wd}); rc != 0 {
+		t.Fatalf("seed project rc=%d", rc)
+	}
+	if rc := cmdAdd([]string{"task", "child task", "--slug", "child-task", "--project", "old-proj"}); rc != 0 {
+		t.Fatalf("seed task rc=%d", rc)
+	}
+	if rc := cmdAdd([]string{"playbook", "child pb", "--slug", "child-pb", "--project", "old-proj", "--work-dir", wd}); rc != 0 {
+		t.Fatalf("seed playbook rc=%d", rc)
+	}
+
+	if rc := cmdUpdate([]string{"project", "old-proj", "--slug", "new-proj", "--name", "New Name"}); rc != 0 {
+		t.Fatalf("rename rc=%d", rc)
+	}
+
+	db := openFlowDB(t)
+	p, err := flowdb.GetProject(db, "new-proj")
+	if err != nil {
+		t.Fatalf("GetProject(new-proj): %v", err)
+	}
+	if p.Name != "New Name" {
+		t.Errorf("name = %q, want %q", p.Name, "New Name")
+	}
+	if _, err := flowdb.GetProject(db, "old-proj"); err == nil {
+		t.Errorf("old project slug still resolvable; should be renamed")
+	}
+
+	task, _ := flowdb.GetTask(db, "child-task")
+	if !task.ProjectSlug.Valid || task.ProjectSlug.String != "new-proj" {
+		t.Errorf("task project_slug not cascaded: %+v", task.ProjectSlug)
+	}
+	pb, _ := flowdb.GetPlaybook(db, "child-pb")
+	if !pb.ProjectSlug.Valid || pb.ProjectSlug.String != "new-proj" {
+		t.Errorf("playbook project_slug not cascaded: %+v", pb.ProjectSlug)
+	}
+
+	if _, err := os.Stat(filepath.Join(root, "projects", "new-proj", "brief.md")); err != nil {
+		t.Errorf("new project dir missing brief.md: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(root, "projects", "old-proj")); !os.IsNotExist(err) {
+		t.Errorf("old project dir should be gone, got err=%v", err)
+	}
+}
+
+// TestCmdUpdateProjectRenameSlugTaken pins that renaming to an already-taken
+// project slug fails with rc=1 and leaves DB unchanged.
+func TestCmdUpdateProjectRenameSlugTaken(t *testing.T) {
+	setupFlowRoot(t)
+	wd := t.TempDir()
+	if rc := cmdAdd([]string{"project", "P1", "--slug", "p1", "--work-dir", wd}); rc != 0 {
+		t.Fatal()
+	}
+	if rc := cmdAdd([]string{"project", "P2", "--slug", "p2", "--work-dir", wd}); rc != 0 {
+		t.Fatal()
+	}
+	if rc := cmdUpdate([]string{"project", "p1", "--slug", "p2"}); rc != 1 {
+		t.Errorf("rc=%d, want 1 for taken slug", rc)
+	}
+	db := openFlowDB(t)
+	if _, err := flowdb.GetProject(db, "p1"); err != nil {
+		t.Errorf("p1 should still exist after failed rename: %v", err)
+	}
+}
+
+// TestCmdUpdateProjectInvalidSlug pins slug validation: empty and
+// path-separator-containing slugs are rejected.
+func TestCmdUpdateProjectInvalidSlug(t *testing.T) {
+	setupFlowRoot(t)
+	wd := t.TempDir()
+	if rc := cmdAdd([]string{"project", "P", "--slug", "valid", "--work-dir", wd}); rc != 0 {
+		t.Fatal()
+	}
+	if rc := cmdUpdate([]string{"project", "valid", "--slug", "  "}); rc != 2 {
+		t.Errorf("empty slug rc=%d, want 2", rc)
+	}
+	if rc := cmdUpdate([]string{"project", "valid", "--slug", "../escape"}); rc != 2 {
+		t.Errorf("path-separator slug rc=%d, want 2", rc)
+	}
+}
+
+// TestCmdUpdateTaskRenameSlugCascades verifies that renaming a task's
+// slug cascades to tags and the ~/.flow/tasks/<slug>/ dir moves.
+func TestCmdUpdateTaskRenameSlugCascades(t *testing.T) {
+	root := setupFlowRoot(t)
+	seedTask(t, "ut-rename-old")
+	if rc := cmdUpdate([]string{"task", "ut-rename-old", "--tag", "alpha"}); rc != 0 {
+		t.Fatal()
+	}
+
+	if rc := cmdUpdate([]string{"task", "ut-rename-old", "--slug", "ut-rename-new", "--name", "renamed"}); rc != 0 {
+		t.Fatalf("rename rc=%d", rc)
+	}
+
+	db := openFlowDB(t)
+	task, err := flowdb.GetTask(db, "ut-rename-new")
+	if err != nil {
+		t.Fatalf("GetTask(new): %v", err)
+	}
+	if task.Name != "renamed" {
+		t.Errorf("name = %q, want %q", task.Name, "renamed")
+	}
+	if _, err := flowdb.GetTask(db, "ut-rename-old"); err == nil {
+		t.Errorf("old task slug still resolvable")
+	}
+	tags, _ := flowdb.GetTaskTags(db, "ut-rename-new")
+	if len(tags) != 1 || tags[0] != "alpha" {
+		t.Errorf("tags not carried to new slug: %v", tags)
+	}
+
+	if _, err := os.Stat(filepath.Join(root, "tasks", "ut-rename-new", "brief.md")); err != nil {
+		t.Errorf("new task dir missing brief.md: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(root, "tasks", "ut-rename-old")); !os.IsNotExist(err) {
+		t.Errorf("old task dir should be gone, got err=%v", err)
+	}
+}
+
+// TestCmdUpdateTaskRenameSlugTaken pins that renaming to an already-taken
+// task slug fails.
+func TestCmdUpdateTaskRenameSlugTaken(t *testing.T) {
+	setupFlowRoot(t)
+	seedTask(t, "first")
+	seedTask(t, "second")
+	if rc := cmdUpdate([]string{"task", "first", "--slug", "second"}); rc != 1 {
+		t.Errorf("rc=%d, want 1 for taken slug", rc)
+	}
+}
+
+// TestCmdUpdatePlaybookRenameSlugCascades verifies that renaming a
+// playbook's slug cascades to tasks.playbook_slug (the
+// kind=playbook_run rows) and moves the FS dir.
+func TestCmdUpdatePlaybookRenameSlugCascades(t *testing.T) {
+	root := setupFlowRoot(t)
+	wd := t.TempDir()
+	if rc := cmdAdd([]string{"playbook", "Old PB", "--slug", "old-pb", "--work-dir", wd}); rc != 0 {
+		t.Fatalf("seed rc=%d", rc)
+	}
+	// Seed a fake playbook-run task referencing the playbook by slug.
+	db := openFlowDB(t)
+	now := flowdb.NowISO()
+	if _, err := db.Exec(
+		`INSERT INTO tasks (slug, name, status, kind, playbook_slug, priority, work_dir, session_provider, session_id, status_changed_at, created_at, updated_at)
+		 VALUES (?, ?, 'in-progress', 'playbook_run', ?, 'medium', ?, 'claude', ?, ?, ?, ?)`,
+		"old-pb-run-1", "Run 1", "old-pb", wd, "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee", now, now, now,
+	); err != nil {
+		t.Fatalf("seed run task: %v", err)
+	}
+
+	if rc := cmdUpdate([]string{"playbook", "old-pb", "--slug", "new-pb", "--name", "New PB"}); rc != 0 {
+		t.Fatalf("rename rc=%d", rc)
+	}
+
+	pb, err := flowdb.GetPlaybook(db, "new-pb")
+	if err != nil {
+		t.Fatalf("GetPlaybook(new-pb): %v", err)
+	}
+	if pb.Name != "New PB" {
+		t.Errorf("name = %q, want %q", pb.Name, "New PB")
+	}
+	runTask, _ := flowdb.GetTask(db, "old-pb-run-1")
+	if !runTask.PlaybookSlug.Valid || runTask.PlaybookSlug.String != "new-pb" {
+		t.Errorf("run task playbook_slug not cascaded: %+v", runTask.PlaybookSlug)
+	}
+	if _, err := os.Stat(filepath.Join(root, "playbooks", "new-pb", "brief.md")); err != nil {
+		t.Errorf("new playbook dir missing brief.md: %v", err)
+	}
+}
+
+// TestCmdUpdateUnknownPlaybookTarget pins that `flow update playbook
+// <unknown>` errors out cleanly.
+func TestCmdUpdateUnknownPlaybookTarget(t *testing.T) {
+	setupFlowRoot(t)
+	if rc := cmdUpdate([]string{"playbook", "nope", "--name", "X"}); rc != 1 {
+		t.Errorf("rc=%d, want 1", rc)
+	}
+}
+
+// TestCmdUpdatePlaybookRequiresFlag pins that no field flag → rc=2.
+func TestCmdUpdatePlaybookRequiresFlag(t *testing.T) {
+	setupFlowRoot(t)
+	wd := t.TempDir()
+	if rc := cmdAdd([]string{"playbook", "P", "--slug", "p-flag", "--work-dir", wd}); rc != 0 {
+		t.Fatal()
+	}
+	if rc := cmdUpdate([]string{"playbook", "p-flag"}); rc != 2 {
+		t.Errorf("rc=%d, want 2 for no fields", rc)
 	}
 }

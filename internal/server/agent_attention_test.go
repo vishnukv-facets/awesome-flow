@@ -470,7 +470,7 @@ func TestCodexHookHealthRejectsAbsoluteManagedHookCommand(t *testing.T) {
 	insertProjectTask(t, db, root)
 	t.Setenv("CODEX_HOME", t.TempDir())
 	sessionID := "aaaaaaaa-1111-4aaa-8aaa-aaaaaaaaaaaa"
-	writeCodexHookConfig(t, root, "/Users/vishnukv/facets/codebases/awesome-flow/bin/flow hook agent-event --provider codex")
+	writeCodexHookConfig(t, root, "/Users/vishnukv/facets/codebases/flow-manager/bin/flow hook agent-event --provider codex")
 	srv := New(Config{DB: db, FlowRoot: root, Version: "test"})
 	health := srv.agentHookHealth(
 		TaskView{Slug: "build-ui", WorkDir: root, SessionID: &sessionID},

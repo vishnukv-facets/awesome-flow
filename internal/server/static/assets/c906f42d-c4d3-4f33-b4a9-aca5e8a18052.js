@@ -893,7 +893,6 @@ const SessionDetail = ({ agent, goto, action, gitDiffOpen = false, toggleGitDiff
             <span className="mono dim">{pr.state}</span>
           </a>
         ))}
-        <span className="bridge-poll mono">live snapshot stream</span>
         <div style={{marginLeft: 'auto', display: 'flex', gap: 6}}>
           <button className={`btn sm ${gitDiffOpen ? 'primary' : ''}`} onClick={toggleGitDiff} title={gitDiffOpen ? 'Hide git diff panel' : 'Show git diff panel'}>
             <Icon name="git-compare" size={11}/>
@@ -1681,7 +1680,7 @@ const MarkdownView = ({ source, empty = 'No brief text found.' }) => {
       const type = ordered ? 'ol' : 'ul';
       if (list && list.type !== type) flushList();
       if (!list) list = { type, items: [] };
-      list.items.push((unordered || ordered)[1]);
+      list.items.push(ordered ? ordered[2] : unordered[1]);
       continue;
     }
     flushList();
@@ -2566,13 +2565,37 @@ const QRModal = ({ onClose }) => {
 };
 
 // ───────── Confirm modal ───────────────────────────────────────────────
-const ConfirmModal = ({ title, body, confirm, danger, onConfirm, onClose, checkLabel }) => {
+const ConfirmModal = ({ title, body, confirm, danger, onConfirm, onClose, checkLabel, requireText, requireLabel, requirePlaceholder }) => {
   const [checked, setChecked] = useState(false);
+  const [typed, setTyped] = useState('');
+  const inputRef = useRef(null);
+  useEffect(() => { if (requireText && inputRef.current) inputRef.current.focus(); }, [requireText]);
+  const matches = !requireText || typed.trim() === requireText;
+  const canConfirm = matches && (!checkLabel || checked);
+  const submit = () => { if (!canConfirm) return; onConfirm?.(checked); onClose(); };
   return (
     <div className="modal-scrim centered" onClick={onClose}>
       <div className="modal" onClick={(e) => e.stopPropagation()}>
         <div className="modal-head">{title}</div>
         <div className="modal-body">{body}</div>
+        {requireText && (
+          <div className="modal-confirm-type">
+            <div className="modal-confirm-label">
+              {requireLabel || <>Type <code className="modal-confirm-token">{requireText}</code> to confirm.</>}
+            </div>
+            <input
+              ref={inputRef}
+              type="text"
+              className="form-input mono"
+              autoComplete="off"
+              spellCheck={false}
+              placeholder={requirePlaceholder || requireText}
+              value={typed}
+              onChange={(e) => setTyped(e.target.value)}
+              onKeyDown={(e) => { if (e.key === 'Enter') submit(); }}
+            />
+          </div>
+        )}
         {checkLabel && (
           <label className="modal-check">
             <input type="checkbox" checked={checked} onChange={(e) => setChecked(e.target.checked)}/>
@@ -2581,7 +2604,7 @@ const ConfirmModal = ({ title, body, confirm, danger, onConfirm, onClose, checkL
         )}
         <div className="modal-foot">
           <button className="btn" onClick={onClose}>Cancel</button>
-          <button className={`btn ${danger ? 'danger' : 'primary'}`} onClick={() => { onConfirm?.(checked); onClose(); }}>{confirm || 'Confirm'}</button>
+          <button className={`btn ${danger ? 'danger' : 'primary'}`} disabled={!canConfirm} onClick={submit}>{confirm || 'Confirm'}</button>
         </div>
       </div>
     </div>

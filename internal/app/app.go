@@ -121,13 +121,15 @@ Read:
 
 Edit / mutate:
   flow edit        <ref>
-  flow update task    <ref> [--work-dir <path>] [--mkdir]
-                            [--status <s>] [--priority h|m|l]
-                            [--assignee <name>] [--clear-assignee]
-                            [--due-date <date>] [--clear-due]
-                            [--waiting "<who or what>"] [--clear-waiting]
-                            [--tag <t> ...] [--remove-tag <t> ...] [--clear-tags]
-  flow update project <ref> [--priority h|m|l]
+  flow update task     <ref> [--slug <new>] [--name <new>]
+                             [--work-dir <path>] [--mkdir]
+                             [--status <s>] [--priority h|m|l]
+                             [--assignee <name>] [--clear-assignee]
+                             [--due-date <date>] [--clear-due]
+                             [--waiting "<who or what>"] [--clear-waiting]
+                             [--tag <t> ...] [--remove-tag <t> ...] [--clear-tags]
+  flow update project  <ref> [--slug <new>] [--name <new>] [--work-dir <path>] [--mkdir] [--priority h|m|l]
+  flow update playbook <ref> [--slug <new>] [--name <new>] [--work-dir <path>] [--mkdir]
   flow do        <ref> [--agent claude|codex] [--fresh] [--dangerously-skip-permissions] [--force]   (spawn a new tab; --force overrides the live-session guard)
   flow do --here <ref> [--force]                                              (bind THIS Claude session to the task; --force overwrites a prior binding)
   flow archive   <ref>

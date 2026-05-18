@@ -6,6 +6,7 @@ import (
 	"flow/internal/flowdb"
 	"fmt"
 	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"time"
@@ -25,9 +26,56 @@ func cmdUpdate(args []string) int {
 		return cmdUpdateTask(args[1:])
 	case "project":
 		return cmdUpdateProject(args[1:])
+	case "playbook":
+		return cmdUpdatePlaybook(args[1:])
 	}
-	fmt.Fprintf(os.Stderr, "error: unknown update target %q (expected 'task' or 'project')\n", args[0])
+	fmt.Fprintf(os.Stderr, "error: unknown update target %q (expected 'task', 'project', or 'playbook')\n", args[0])
 	return 2
+}
+
+// validateRenameSlug rejects empty / path-separator-containing slugs.
+// Slug format beyond that is intentionally lax to match `flow add`'s
+// --slug acceptance (any non-empty string the user types is allowed).
+func validateRenameSlug(s string) error {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return fmt.Errorf("--slug cannot be empty")
+	}
+	if strings.ContainsAny(s, `/\`) {
+		return fmt.Errorf("--slug must not contain path separators: %q", s)
+	}
+	return nil
+}
+
+// renameEntityDir moves ~/.flow/<entityDir>/<oldSlug>/ to <newSlug>/.
+// Returns nil if the old dir doesn't exist (rename happened before any
+// FS state existed — e.g. a freshly-created entity). Errors if the new
+// dir already exists, since silently merging would obscure data.
+func renameEntityDir(entityDir, oldSlug, newSlug string) error {
+	if oldSlug == newSlug {
+		return nil
+	}
+	root, err := flowRoot()
+	if err != nil {
+		return err
+	}
+	oldPath := filepath.Join(root, entityDir, oldSlug)
+	newPath := filepath.Join(root, entityDir, newSlug)
+	if _, err := os.Stat(oldPath); err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return fmt.Errorf("stat %s: %w", oldPath, err)
+	}
+	if _, err := os.Stat(newPath); err == nil {
+		return fmt.Errorf("target dir %s already exists; refusing to overwrite", newPath)
+	} else if !os.IsNotExist(err) {
+		return fmt.Errorf("stat %s: %w", newPath, err)
+	}
+	if err := os.Rename(oldPath, newPath); err != nil {
+		return fmt.Errorf("rename %s -> %s: %w", oldPath, newPath, err)
+	}
+	return nil
 }
 
 // sessionUUIDRe mirrors claude's --session-id contract: standard v4
@@ -56,6 +104,8 @@ func cmdUpdateTask(args []string) int {
 	}
 	ref := args[0]
 	fs := flagSet("update task")
+	newSlug := fs.String("slug", "", "new slug (renames the task; cascades to child tasks, tags, PR links)")
+	newName := fs.String("name", "", "new display name")
 	workDir := fs.String("work-dir", "", "new absolute work directory")
 	mkdir := fs.Bool("mkdir", false, "create --work-dir if it does not exist")
 	status := fs.String("status", "", "new status: backlog|in-progress|done")
@@ -74,13 +124,21 @@ func cmdUpdateTask(args []string) int {
 	if err := fs.Parse(args[1:]); err != nil {
 		return 2
 	}
-	anyField := *workDir != "" || *status != "" || *priority != "" ||
+	anyField := *newSlug != "" || *newName != "" ||
+		*workDir != "" || *status != "" || *priority != "" ||
 		*assignee != "" || *clearAssignee || *dueDate != "" || *clearDue ||
 		*waiting != "" || *clearWaiting ||
 		len(addTags) > 0 || len(removeTags) > 0 || *clearTags
 	if !anyField {
-		fmt.Fprintln(os.Stderr, "error: give at least one of --work-dir, --status, --priority, --assignee, --clear-assignee, --due-date, --clear-due, --waiting, --clear-waiting, --tag, --remove-tag, --clear-tags")
+		fmt.Fprintln(os.Stderr, "error: give at least one of --slug, --name, --work-dir, --status, --priority, --assignee, --clear-assignee, --due-date, --clear-due, --waiting, --clear-waiting, --tag, --remove-tag, --clear-tags")
 		return 2
+	}
+
+	if *newSlug != "" {
+		if err := validateRenameSlug(*newSlug); err != nil {
+			fmt.Fprintf(os.Stderr, "error: %v\n", err)
+			return 2
+		}
 	}
 
 	if *status != "" && !isValidStatus(*status) {
@@ -154,7 +212,37 @@ func cmdUpdateTask(args []string) int {
 		return 1
 	}
 
+	// Rename first so subsequent field updates operate on the new slug.
+	// FS dir move happens after the DB cascade succeeds; if FS rename
+	// fails after DB commit we leave a recoverable inconsistency (DB
+	// points at new slug, dir is still under old slug).
+	if *newSlug != "" && *newSlug != task.Slug {
+		if err := flowdb.RenameTask(db, task.Slug, *newSlug); err != nil {
+			if errors.Is(err, flowdb.ErrSlugTaken) {
+				fmt.Fprintf(os.Stderr, "error: task slug %q is already taken\n", *newSlug)
+				return 1
+			}
+			fmt.Fprintf(os.Stderr, "error: rename task: %v\n", err)
+			return 1
+		}
+		if err := renameEntityDir("tasks", task.Slug, *newSlug); err != nil {
+			fmt.Fprintf(os.Stderr, "warning: db slug updated but dir rename failed: %v\n", err)
+		}
+		fmt.Printf("slug → %s\n", *newSlug)
+		task.Slug = *newSlug
+	}
+
 	now := flowdb.NowISO()
+	if *newName != "" {
+		if _, err := db.Exec(
+			`UPDATE tasks SET name=?, updated_at=? WHERE slug=?`,
+			*newName, now, task.Slug,
+		); err != nil {
+			fmt.Fprintf(os.Stderr, "error: update name: %v\n", err)
+			return 1
+		}
+		fmt.Printf("name → %s\n", *newName)
+	}
 	if absWorkDir != "" {
 		if _, err := db.Exec(
 			`UPDATE tasks SET work_dir=?, updated_at=? WHERE slug=?`,
@@ -316,10 +404,11 @@ func isValidStatus(s string) bool {
 	return s == "backlog" || s == "in-progress" || s == "done"
 }
 
-// cmdUpdateProject implements `flow update project <ref> [--priority <p>]`.
-// Project field edits are minimal — priority is the only post-creation
-// field with a real reason to change. Status and other shape edits go
-// through `flow archive` / `flow edit`.
+// cmdUpdateProject implements `flow update project <ref> [--slug <s>]
+// [--name <n>] [--work-dir <path>] [--mkdir] [--priority <p>]`. --slug
+// renames the project and cascades to tasks.project_slug and
+// playbooks.project_slug; the ~/.flow/projects/<slug>/ directory moves
+// to match.
 func cmdUpdateProject(args []string) int {
 	if len(args) < 1 {
 		fmt.Fprintln(os.Stderr, "error: update project requires a project ref")
@@ -327,18 +416,38 @@ func cmdUpdateProject(args []string) int {
 	}
 	ref := args[0]
 	fs := flagSet("update project")
+	newSlug := fs.String("slug", "", "new slug (renames the project; cascades to tasks/playbooks)")
+	newName := fs.String("name", "", "new display name")
+	workDir := fs.String("work-dir", "", "new absolute work directory")
+	mkdir := fs.Bool("mkdir", false, "create --work-dir if it does not exist")
 	priority := fs.String("priority", "", "new priority: high|medium|low")
 	if err := fs.Parse(args[1:]); err != nil {
 		return 2
 	}
-	if *priority == "" {
-		fmt.Fprintln(os.Stderr, "error: give at least one of --priority")
+	if *newSlug == "" && *newName == "" && *workDir == "" && *priority == "" {
+		fmt.Fprintln(os.Stderr, "error: give at least one of --slug, --name, --work-dir, --priority")
 		return 2
 	}
-	if !isValidPriority(*priority) {
+	if *priority != "" && !isValidPriority(*priority) {
 		fmt.Fprintf(os.Stderr,
 			"error: --priority must be high|medium|low (got %q)\n", *priority)
 		return 2
+	}
+	if *newSlug != "" {
+		if err := validateRenameSlug(*newSlug); err != nil {
+			fmt.Fprintf(os.Stderr, "error: %v\n", err)
+			return 2
+		}
+	}
+
+	var absWorkDir string
+	if *workDir != "" {
+		abs, err := resolveWorkDir(*workDir, *mkdir)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "error: %v\n", err)
+			return 1
+		}
+		absWorkDir = abs
 	}
 
 	dbPath, err := flowDBPath()
@@ -363,15 +472,157 @@ func cmdUpdateProject(args []string) int {
 		return 1
 	}
 
+	if *newSlug != "" && *newSlug != p.Slug {
+		if err := flowdb.RenameProject(db, p.Slug, *newSlug); err != nil {
+			if errors.Is(err, flowdb.ErrSlugTaken) {
+				fmt.Fprintf(os.Stderr, "error: project slug %q is already taken\n", *newSlug)
+				return 1
+			}
+			fmt.Fprintf(os.Stderr, "error: rename project: %v\n", err)
+			return 1
+		}
+		if err := renameEntityDir("projects", p.Slug, *newSlug); err != nil {
+			fmt.Fprintf(os.Stderr, "warning: db slug updated but dir rename failed: %v\n", err)
+		}
+		fmt.Printf("slug → %s\n", *newSlug)
+		p.Slug = *newSlug
+	}
+
 	now := flowdb.NowISO()
-	if _, err := db.Exec(
-		`UPDATE projects SET priority=?, updated_at=? WHERE slug=?`,
-		*priority, now, p.Slug,
-	); err != nil {
-		fmt.Fprintf(os.Stderr, "error: update priority: %v\n", err)
+	if *newName != "" {
+		if _, err := db.Exec(
+			`UPDATE projects SET name=?, updated_at=? WHERE slug=?`,
+			*newName, now, p.Slug,
+		); err != nil {
+			fmt.Fprintf(os.Stderr, "error: update name: %v\n", err)
+			return 1
+		}
+		fmt.Printf("name → %s\n", *newName)
+	}
+	if absWorkDir != "" {
+		if _, err := db.Exec(
+			`UPDATE projects SET work_dir=?, updated_at=? WHERE slug=?`,
+			absWorkDir, now, p.Slug,
+		); err != nil {
+			fmt.Fprintf(os.Stderr, "error: update work_dir: %v\n", err)
+			return 1
+		}
+		fmt.Printf("work_dir → %s\n", absWorkDir)
+	}
+	if *priority != "" {
+		if _, err := db.Exec(
+			`UPDATE projects SET priority=?, updated_at=? WHERE slug=?`,
+			*priority, now, p.Slug,
+		); err != nil {
+			fmt.Fprintf(os.Stderr, "error: update priority: %v\n", err)
+			return 1
+		}
+		fmt.Printf("priority → %s\n", *priority)
+	}
+	return 0
+}
+
+// cmdUpdatePlaybook implements `flow update playbook <ref> [--slug <s>]
+// [--name <n>] [--work-dir <path>] [--mkdir]`. --slug renames the
+// playbook and cascades to tasks.playbook_slug (playbook-run tasks).
+// The ~/.flow/playbooks/<slug>/ directory moves to match. Existing
+// playbook-run task brief.md snapshots are NOT rewritten — they remain
+// frozen at run time and may still reference the old slug in their
+// stamped contents; that is by design.
+func cmdUpdatePlaybook(args []string) int {
+	if len(args) < 1 {
+		fmt.Fprintln(os.Stderr, "error: update playbook requires a playbook ref")
+		return 2
+	}
+	ref := args[0]
+	fs := flagSet("update playbook")
+	newSlug := fs.String("slug", "", "new slug (renames the playbook; cascades to playbook-run tasks)")
+	newName := fs.String("name", "", "new display name")
+	workDir := fs.String("work-dir", "", "new absolute work directory")
+	mkdir := fs.Bool("mkdir", false, "create --work-dir if it does not exist")
+	if err := fs.Parse(args[1:]); err != nil {
+		return 2
+	}
+	if *newSlug == "" && *newName == "" && *workDir == "" {
+		fmt.Fprintln(os.Stderr, "error: give at least one of --slug, --name, --work-dir")
+		return 2
+	}
+	if *newSlug != "" {
+		if err := validateRenameSlug(*newSlug); err != nil {
+			fmt.Fprintf(os.Stderr, "error: %v\n", err)
+			return 2
+		}
+	}
+
+	var absWorkDir string
+	if *workDir != "" {
+		abs, err := resolveWorkDir(*workDir, *mkdir)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "error: %v\n", err)
+			return 1
+		}
+		absWorkDir = abs
+	}
+
+	dbPath, err := flowDBPath()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		return 1
 	}
-	fmt.Printf("priority → %s\n", *priority)
+	db, err := flowdb.OpenDB(dbPath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error: open db: %v\n", err)
+		return 1
+	}
+	defer db.Close()
+
+	pb, err := ResolvePlaybook(db, ref, true)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			fmt.Fprintf(os.Stderr, "error: playbook %q not found\n", ref)
+			return 1
+		}
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		return 1
+	}
+
+	if *newSlug != "" && *newSlug != pb.Slug {
+		if err := flowdb.RenamePlaybook(db, pb.Slug, *newSlug); err != nil {
+			if errors.Is(err, flowdb.ErrSlugTaken) {
+				fmt.Fprintf(os.Stderr, "error: playbook slug %q is already taken\n", *newSlug)
+				return 1
+			}
+			fmt.Fprintf(os.Stderr, "error: rename playbook: %v\n", err)
+			return 1
+		}
+		if err := renameEntityDir("playbooks", pb.Slug, *newSlug); err != nil {
+			fmt.Fprintf(os.Stderr, "warning: db slug updated but dir rename failed: %v\n", err)
+		}
+		fmt.Printf("slug → %s\n", *newSlug)
+		pb.Slug = *newSlug
+	}
+
+	now := flowdb.NowISO()
+	if *newName != "" {
+		if _, err := db.Exec(
+			`UPDATE playbooks SET name=?, updated_at=? WHERE slug=?`,
+			*newName, now, pb.Slug,
+		); err != nil {
+			fmt.Fprintf(os.Stderr, "error: update name: %v\n", err)
+			return 1
+		}
+		fmt.Printf("name → %s\n", *newName)
+	}
+	if absWorkDir != "" {
+		if _, err := db.Exec(
+			`UPDATE playbooks SET work_dir=?, updated_at=? WHERE slug=?`,
+			absWorkDir, now, pb.Slug,
+		); err != nil {
+			fmt.Fprintf(os.Stderr, "error: update work_dir: %v\n", err)
+			return 1
+		}
+		fmt.Printf("work_dir → %s\n", absWorkDir)
+	}
 	return 0
 }
 

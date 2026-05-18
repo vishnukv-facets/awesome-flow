@@ -1343,3 +1343,162 @@ func UpsertPlaybook(db *sql.DB, pb *Playbook) error {
 	}
 	return nil
 }
+
+// ---------- rename operations ----------
+//
+// The schema doesn't declare ON UPDATE CASCADE on any foreign key, so a
+// slug change has to walk every reference explicitly. PRAGMA
+// defer_foreign_keys = ON inside the transaction defers validation to
+// commit, which lets us write parent and children in any order without
+// tripping mid-transaction orphan checks. Filesystem moves of
+// ~/.flow/{projects,tasks,playbooks}/<slug>/ are the caller's job — the
+// DB layer doesn't know the flow root.
+
+// ErrSlugTaken is returned by Rename* when the destination slug already
+// exists in the same entity table.
+var ErrSlugTaken = errors.New("slug already taken")
+
+// RenameProject changes a project's slug and cascades the change to every
+// table that references projects(slug): tasks.project_slug and
+// playbooks.project_slug. No-op if old == new.
+func RenameProject(db *sql.DB, oldSlug, newSlug string) error {
+	if oldSlug == newSlug {
+		return nil
+	}
+	var n int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM projects WHERE slug = ?`, newSlug).Scan(&n); err != nil {
+		return fmt.Errorf("check target slug: %w", err)
+	}
+	if n > 0 {
+		return ErrSlugTaken
+	}
+
+	tx, err := db.Begin()
+	if err != nil {
+		return fmt.Errorf("begin: %w", err)
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			_ = tx.Rollback()
+		}
+	}()
+	if _, err := tx.Exec(`PRAGMA defer_foreign_keys = ON`); err != nil {
+		return fmt.Errorf("defer fk: %w", err)
+	}
+
+	now := NowISO()
+	if _, err := tx.Exec(`UPDATE projects SET slug=?, updated_at=? WHERE slug=?`, newSlug, now, oldSlug); err != nil {
+		return fmt.Errorf("update projects.slug: %w", err)
+	}
+	if _, err := tx.Exec(`UPDATE tasks SET project_slug=?, updated_at=? WHERE project_slug=?`, newSlug, now, oldSlug); err != nil {
+		return fmt.Errorf("cascade tasks.project_slug: %w", err)
+	}
+	if _, err := tx.Exec(`UPDATE playbooks SET project_slug=?, updated_at=? WHERE project_slug=?`, newSlug, now, oldSlug); err != nil {
+		return fmt.Errorf("cascade playbooks.project_slug: %w", err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit: %w", err)
+	}
+	committed = true
+	return nil
+}
+
+// RenameTask changes a task's slug and cascades the change to every
+// table that references tasks(slug): tasks.parent_slug (self-ref),
+// task_tags.task_slug, task_pr_links.task_slug, and
+// agent_runtime_states.task_slug. No-op if old == new.
+func RenameTask(db *sql.DB, oldSlug, newSlug string) error {
+	if oldSlug == newSlug {
+		return nil
+	}
+	var n int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM tasks WHERE slug = ?`, newSlug).Scan(&n); err != nil {
+		return fmt.Errorf("check target slug: %w", err)
+	}
+	if n > 0 {
+		return ErrSlugTaken
+	}
+
+	tx, err := db.Begin()
+	if err != nil {
+		return fmt.Errorf("begin: %w", err)
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			_ = tx.Rollback()
+		}
+	}()
+	if _, err := tx.Exec(`PRAGMA defer_foreign_keys = ON`); err != nil {
+		return fmt.Errorf("defer fk: %w", err)
+	}
+
+	now := NowISO()
+	if _, err := tx.Exec(`UPDATE tasks SET slug=?, updated_at=? WHERE slug=?`, newSlug, now, oldSlug); err != nil {
+		return fmt.Errorf("update tasks.slug: %w", err)
+	}
+	if _, err := tx.Exec(`UPDATE tasks SET parent_slug=? WHERE parent_slug=?`, newSlug, oldSlug); err != nil {
+		return fmt.Errorf("cascade tasks.parent_slug: %w", err)
+	}
+	if _, err := tx.Exec(`UPDATE task_tags SET task_slug=? WHERE task_slug=?`, newSlug, oldSlug); err != nil {
+		return fmt.Errorf("cascade task_tags.task_slug: %w", err)
+	}
+	if _, err := tx.Exec(`UPDATE task_pr_links SET task_slug=? WHERE task_slug=?`, newSlug, oldSlug); err != nil {
+		return fmt.Errorf("cascade task_pr_links.task_slug: %w", err)
+	}
+	if _, err := tx.Exec(`UPDATE agent_runtime_states SET task_slug=? WHERE task_slug=?`, newSlug, oldSlug); err != nil {
+		return fmt.Errorf("cascade agent_runtime_states.task_slug: %w", err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit: %w", err)
+	}
+	committed = true
+	return nil
+}
+
+// RenamePlaybook changes a playbook's slug and cascades the change to
+// every table that references playbooks(slug): tasks.playbook_slug.
+// No-op if old == new.
+func RenamePlaybook(db *sql.DB, oldSlug, newSlug string) error {
+	if oldSlug == newSlug {
+		return nil
+	}
+	var n int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM playbooks WHERE slug = ?`, newSlug).Scan(&n); err != nil {
+		return fmt.Errorf("check target slug: %w", err)
+	}
+	if n > 0 {
+		return ErrSlugTaken
+	}
+
+	tx, err := db.Begin()
+	if err != nil {
+		return fmt.Errorf("begin: %w", err)
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			_ = tx.Rollback()
+		}
+	}()
+	if _, err := tx.Exec(`PRAGMA defer_foreign_keys = ON`); err != nil {
+		return fmt.Errorf("defer fk: %w", err)
+	}
+
+	now := NowISO()
+	if _, err := tx.Exec(`UPDATE playbooks SET slug=?, updated_at=? WHERE slug=?`, newSlug, now, oldSlug); err != nil {
+		return fmt.Errorf("update playbooks.slug: %w", err)
+	}
+	if _, err := tx.Exec(`UPDATE tasks SET playbook_slug=? WHERE playbook_slug=?`, newSlug, oldSlug); err != nil {
+		return fmt.Errorf("cascade tasks.playbook_slug: %w", err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit: %w", err)
+	}
+	committed = true
+	return nil
+}

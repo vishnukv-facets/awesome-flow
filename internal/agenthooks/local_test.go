@@ -171,16 +171,16 @@ func TestInstallLocalWithOptionsReplacesAbsoluteManagedCommand(t *testing.T) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	raw := []byte(`{"hooks":{"SessionStart":[{"matcher":"startup|resume","hooks":[{"type":"command","command":"'/Users/vishnukv/facets/codebases/awesome-flow/bin/flow' hook agent-event --provider claude --url 'http://127.0.0.1:8787/api/hooks/agent'"}]}]}}`)
+	raw := []byte(`{"hooks":{"SessionStart":[{"matcher":"startup|resume","hooks":[{"type":"command","command":"'/Users/vishnukv/facets/codebases/flow-manager/bin/flow' hook agent-event --provider claude --url 'http://127.0.0.1:8787/api/hooks/agent'"}]}]}}`)
 	if err := os.WriteFile(path, raw, 0o644); err != nil {
 		t.Fatal(err)
 	}
 
-	if changed, err := InstallLocalWithOptions(dir, InstallOptions{CommandPath: "/Users/vishnukv/facets/codebases/awesome-flow/bin/flow", HookURL: "http://127.0.0.1:8787/api/hooks/agent"}); err != nil || !changed {
+	if changed, err := InstallLocalWithOptions(dir, InstallOptions{CommandPath: "/Users/vishnukv/facets/codebases/flow-manager/bin/flow", HookURL: "http://127.0.0.1:8787/api/hooks/agent"}); err != nil || !changed {
 		t.Fatalf("InstallLocalWithOptions changed=%v err=%v, want replacement", changed, err)
 	}
 	claude := readHookTestFile(t, path)
-	oldCommand := "'/Users/vishnukv/facets/codebases/awesome-flow/bin/flow' hook agent-event --provider claude --url 'http://127.0.0.1:8787/api/hooks/agent'"
+	oldCommand := "'/Users/vishnukv/facets/codebases/flow-manager/bin/flow' hook agent-event --provider claude --url 'http://127.0.0.1:8787/api/hooks/agent'"
 	if hookFileReferences(claude, "SessionStart", oldCommand) {
 		t.Fatalf("absolute command was not removed: %#v", claude["hooks"])
 	}
