@@ -420,6 +420,9 @@ func (s *Server) prepareTerminalLaunch(slug string) (terminalLaunch, error) {
 	if strings.TrimSpace(task.WorkDir) == "" {
 		return terminalLaunch{}, fmt.Errorf("task %s has no work_dir", task.Slug)
 	}
+	if err := flowdb.EnsureTaskStartable(s.cfg.DB, task); err != nil {
+		return terminalLaunch{}, err
+	}
 
 	now := flowdb.NowISO()
 	sessionID := strings.TrimSpace(task.SessionID.String)

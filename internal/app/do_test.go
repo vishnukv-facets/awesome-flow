@@ -182,6 +182,46 @@ func TestCmdDoFreshAllocatesSessionID(t *testing.T) {
 	}
 }
 
+func TestCmdDoRefusesBlockedTasks(t *testing.T) {
+	setupFlowRoot(t)
+	seedTask(t, "parent-task")
+	seedTask(t, "child-task")
+	seedTask(t, "waiting-task")
+	db := openFlowDB(t)
+	if _, err := db.Exec(`UPDATE tasks SET parent_slug = ? WHERE slug = ?`, "parent-task", "child-task"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`UPDATE tasks SET waiting_on = ? WHERE slug = ?`, "external approval", "waiting-task"); err != nil {
+		t.Fatal(err)
+	}
+	db.Close()
+
+	count, _ := stubITerm(t)
+	for _, slug := range []string{"child-task", "waiting-task"} {
+		out := captureStdout(t, func() {
+			if rc := cmdDo([]string{slug}); rc != 1 {
+				t.Errorf("cmdDo %s rc=%d, want 1", slug, rc)
+			}
+		})
+		if !strings.Contains(out, "error: task") {
+			t.Errorf("missing blocker error for %s: %q", slug, out)
+		}
+	}
+	if *count != 0 {
+		t.Fatalf("blocked tasks spawned %d terminals, want 0", *count)
+	}
+	db = openFlowDB(t)
+	for _, slug := range []string{"child-task", "waiting-task"} {
+		task, err := flowdb.GetTask(db, slug)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if task.Status != "backlog" || task.SessionID.Valid || task.SessionStarted.Valid {
+			t.Fatalf("blocked task mutated after refused do: %+v", task)
+		}
+	}
+}
+
 // TestCmdDoFreshSpawnFailureRollsBackSessionID pins the rollback
 // invariant: when a fresh-bootstrap spawn fails (e.g. Terminal.app
 // Accessibility denied), BOTH the session_id pre-allocation AND the
@@ -957,5 +997,31 @@ func TestCmdDoHereRejectsDoneTask(t *testing.T) {
 	t.Setenv("CLAUDE_CODE_SESSION_ID", sid)
 	if rc := cmdDo([]string{"done-task", "--here"}); rc != 1 {
 		t.Errorf("rc=%d, want 1 (--here on done task should refuse)", rc)
+	}
+}
+
+func TestCmdDoHereRefusesBlockedTask(t *testing.T) {
+	setupFlowRoot(t)
+	seedTask(t, "blocked-here")
+	db := openFlowDB(t)
+	if _, err := db.Exec(`UPDATE tasks SET waiting_on = ? WHERE slug = ?`, "external approval", "blocked-here"); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("CLAUDE_CODE_SESSION_ID", "12345678-1234-4234-8234-123456789abc")
+
+	out := captureStdout(t, func() {
+		if rc := cmdDo([]string{"blocked-here", "--here"}); rc != 1 {
+			t.Fatalf("rc=%d, want 1", rc)
+		}
+	})
+	if !strings.Contains(out, "waiting on external approval") {
+		t.Fatalf("missing blocker error: %q", out)
+	}
+	task, err := flowdb.GetTask(db, "blocked-here")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if task.Status != "backlog" || task.SessionID.Valid || task.SessionStarted.Valid {
+		t.Fatalf("blocked --here should not bind session: %+v", task)
 	}
 }

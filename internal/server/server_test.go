@@ -488,6 +488,59 @@ func TestPrepareTerminalLaunchAllocatesBrowserSession(t *testing.T) {
 	}
 }
 
+func TestPrepareTerminalLaunchRefusesBlockedTask(t *testing.T) {
+	root, db := testRootDB(t)
+	insertProjectTask(t, db, root)
+	now := flowdb.NowISO()
+	if _, err := db.Exec(
+		`INSERT INTO tasks (slug, name, project_slug, status, kind, priority, work_dir, created_at, updated_at)
+		 VALUES ('parent-task', 'Parent task', 'flow', 'backlog', 'regular', 'high', ?, ?, ?)`,
+		root, now, now,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`UPDATE tasks SET parent_slug = ? WHERE slug = ?`, "parent-task", "build-ui"); err != nil {
+		t.Fatal(err)
+	}
+
+	srv := New(Config{DB: db, FlowRoot: root, CommandPath: "/bin/false"})
+	if _, err := srv.prepareTerminalLaunch("build-ui"); err == nil || !strings.Contains(err.Error(), `depends on "parent-task"`) {
+		t.Fatalf("prepareTerminalLaunch err = %v, want dependency blocker", err)
+	}
+	task, err := flowdb.GetTask(db, "build-ui")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if task.Status != "backlog" || task.SessionID.Valid || task.SessionStarted.Valid {
+		t.Fatalf("blocked task should not be mutated: %+v", task)
+	}
+}
+
+func TestSpawnActionRefusesBlockedTaskBeforeProviderChoice(t *testing.T) {
+	root, db := testRootDB(t)
+	insertProjectTask(t, db, root)
+	if _, err := db.Exec(`UPDATE tasks SET waiting_on = ? WHERE slug = ?`, "external approval", "build-ui"); err != nil {
+		t.Fatal(err)
+	}
+	srv := New(Config{DB: db, FlowRoot: root, CommandPath: "/bin/false"})
+
+	resp, status := srv.runAction(actionRequest{
+		Kind:     "spawn",
+		Slug:     "build-ui",
+		Provider: "codex",
+	})
+	if status != http.StatusBadRequest || resp.OK || !strings.Contains(resp.Message, "waiting on external approval") {
+		t.Fatalf("status = %d, resp = %+v", status, resp)
+	}
+	task, err := flowdb.GetTask(db, "build-ui")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if task.SessionProvider == "codex" || task.Status != "backlog" || task.SessionID.Valid {
+		t.Fatalf("blocked spawn should not mutate provider/session: %+v", task)
+	}
+}
+
 func TestPrepareTerminalLaunchAppliesPermissionMode(t *testing.T) {
 	root, db := testRootDB(t)
 	insertProjectTask(t, db, root)
@@ -921,6 +974,9 @@ func TestStaticActionPayloadForwardsProvider(t *testing.T) {
 	if !strings.Contains(body, "Choose agent provider") || !strings.Contains(body, "_providerChosen") {
 		t.Fatal("backlog spawn must ask for Claude vs Codex before opening a session")
 	}
+	if !strings.Contains(body, "taskStartBlocker(target)") {
+		t.Fatal("spawn action must refuse blocked/dependent backlog tasks before provider choice")
+	}
 	if !strings.Contains(body, "/api/tasks/${encodeURIComponent(sessionSlug)}/bridge") {
 		t.Fatal("completed session routes must fetch the full bridge snapshot instead of using capped ui-data transcripts")
 	}
@@ -970,6 +1026,9 @@ func TestStaticActionPayloadForwardsProvider(t *testing.T) {
 	}
 	if !strings.Contains(string(screens), "<th>Dependencies</th>") || strings.Count(string(screens), "DependencyBadges task=") < 3 {
 		t.Fatal("task screens should render dependencies in backlog, table, and project rows")
+	}
+	if !strings.Contains(string(screens), "const taskStartBlocker") || !strings.Contains(string(screens), "disabled={!anyProviderAvailable() || !!blockReason}") {
+		t.Fatal("task screens should disable spawn controls for blocked/dependent tasks")
 	}
 }
 

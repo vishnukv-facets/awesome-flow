@@ -1525,6 +1525,7 @@ const SessionFallback = ({ slug, goto, action }) => {
   const doneAgent = DONE_AGENTS.find(t => t.slug === slug) || (latestDone && latestDone.slug === slug ? latestDone : null);
   const doneTask = DONE_TASKS.find(t => t.slug === slug) || doneAgent;
   const backlogTask = BACKLOG.find(t => t.slug === slug);
+  const backlogTaskBlocker = backlogTask ? taskStartBlocker(backlogTask) : '';
   const active = AGENTS.filter(a => a.status === 'running' || a.status === 'waiting' || a.status === 'idle').slice(0, 4);
   const backlog = BACKLOG.filter(t => t.slug !== slug).slice(0, 4);
   const title = doneTask ? 'Task is done' : backlogTask ? 'Task is in backlog' : 'Session is not active';
@@ -1544,7 +1545,7 @@ const SessionFallback = ({ slug, goto, action }) => {
         <div className="session-fallback-actions">
           <button className="btn sm primary" onClick={() => goto('sessions')}><Icon name="arrow-left" size={11}/>Sessions</button>
           <button className="btn sm" onClick={() => goto('tasks')}><Icon name="list" size={11}/>Tasks</button>
-          {backlogTask && <button className="btn sm green" onClick={() => action('spawn', backlogTask)}><Icon name="play" size={11}/>Spawn</button>}
+          {backlogTask && <button className="btn sm green" disabled={!!backlogTaskBlocker} title={backlogTaskBlocker || ''} onClick={() => action('spawn', backlogTask)}><Icon name="play" size={11}/>Spawn</button>}
         </div>
       </div>
       <div className="fallback-grid">
@@ -1574,16 +1575,18 @@ const SessionFallback = ({ slug, goto, action }) => {
             <span className="count mono">{backlog.length}</span>
           </div>
           <div className="fallback-list">
-            {backlog.length ? backlog.map(t => (
-              <button key={t.slug} className="fallback-item" onClick={() => action('spawn', t)}>
+            {backlog.length ? backlog.map(t => {
+              const blockReason = taskStartBlocker(t);
+              return (
+              <button key={t.slug} className="fallback-item" disabled={!!blockReason} title={blockReason || ''} onClick={() => action('spawn', t)}>
                 <span className="dot idle"></span>
                 <span>
                   <span className="nm mono">{t.slug}</span>
-                  <span className="meta mono">{t.project || 'floating'} · {t.priority}</span>
+                  <span className="meta mono">{t.project || 'floating'} · {blockReason ? 'blocked' : t.priority}</span>
                 </span>
                 <Icon name="play" size={12}/>
               </button>
-            )) : <div className="fallback-empty mono">Backlog is clear.</div>}
+            );}) : <div className="fallback-empty mono">Backlog is clear.</div>}
           </div>
         </section>
       </div>
@@ -1851,6 +1854,11 @@ const App = () => {
     }
     if (kind === 'investigate') { openBridge('attach', target); return; }
     if (kind === 'spawn') {
+      const blockReason = taskStartBlocker(target);
+      if (blockReason) {
+        setToast(blockReason);
+        return null;
+      }
       if (isBacklogTarget(target) && !target._providerChosen) {
         if (!anyProviderAvailable()) {
           setToast('No supported agent binary found on PATH');

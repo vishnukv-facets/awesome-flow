@@ -259,6 +259,9 @@ func (s *Server) createFlowFromExisting(req actionRequest, task *flowdb.Task, pr
 		return actionResponse{OK: false, Message: "task not found"}, http.StatusInternalServerError
 	}
 	if !task.ArchivedAt.Valid && !task.DeletedAt.Valid && task.Status != "done" {
+		if err := flowdb.EnsureTaskStartable(s.cfg.DB, task); err != nil {
+			return actionResponse{OK: false, Message: err.Error()}, taskStartErrorStatus(err)
+		}
 		agent, _ := s.agentForTask(task.Slug)
 		if agent != nil {
 			if err := s.ensureProviderAvailable(firstNonEmpty(agent.Provider, "claude")); err != nil {
@@ -385,6 +388,18 @@ func (s *Server) ackApproval(kind, target string) (actionResponse, int) {
 }
 
 func (s *Server) openBrowserTerminalBridge(target, providerChoice string) (actionResponse, int) {
+	task, err := flowdb.GetTask(s.cfg.DB, target)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return actionResponse{OK: false, Message: "task not found: " + target}, http.StatusNotFound
+		}
+		return actionResponse{OK: false, Message: err.Error()}, http.StatusInternalServerError
+	}
+	if task.Status != "done" {
+		if err := flowdb.EnsureTaskStartable(s.cfg.DB, task); err != nil {
+			return actionResponse{OK: false, Message: err.Error()}, taskStartErrorStatus(err)
+		}
+	}
 	if err := s.applyBacklogProviderChoice(target, providerChoice); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return actionResponse{OK: false, Message: "task not found: " + target}, http.StatusNotFound
@@ -580,6 +595,9 @@ func (s *Server) restartBrowserTerminalBridge(target string) (actionResponse, in
 	if task.Status == "done" {
 		return actionResponse{OK: false, Message: "task " + target + " is done; move it back to in-progress before reopening"}, http.StatusBadRequest
 	}
+	if err := flowdb.EnsureTaskStartable(s.cfg.DB, task); err != nil {
+		return actionResponse{OK: false, Message: err.Error()}, taskStartErrorStatus(err)
+	}
 	provider := strings.TrimSpace(task.SessionProvider)
 	if provider == "" {
 		provider = "claude"
@@ -623,9 +641,12 @@ func (s *Server) openTaskBridge(target, terminalKind string, force bool) (action
 	if err := s.ensureProviderAvailable(provider); err != nil {
 		return actionResponse{OK: false, Message: err.Error()}, http.StatusBadRequest
 	}
+	if err := flowdb.EnsureTaskStartable(s.cfg.DB, task); err != nil {
+		return actionResponse{OK: false, Message: err.Error()}, taskStartErrorStatus(err)
+	}
 	launch, err := s.prepareTerminalLaunch(target)
 	if err != nil {
-		return actionResponse{OK: false, Message: err.Error()}, http.StatusInternalServerError
+		return actionResponse{OK: false, Message: err.Error()}, taskStartErrorStatus(err)
 	}
 	if err := s.spawnNativeTerminal(terminalKind, task, launch); err != nil {
 		if launch.Created {
@@ -641,6 +662,14 @@ func (s *Server) openTaskBridge(target, terminalKind string, force bool) (action
 		agent.Terminal.Message = terminalModeMessage(firstNonEmpty(agent.Provider, "claude"), "native")
 	}
 	return actionResponse{OK: true, Message: "opened " + target + " in " + terminalLabel(terminalKind), Agent: agent}, http.StatusOK
+}
+
+func taskStartErrorStatus(err error) int {
+	var blocker *flowdb.TaskStartBlocker
+	if errors.As(err, &blocker) {
+		return http.StatusBadRequest
+	}
+	return http.StatusInternalServerError
 }
 
 func (s *Server) spawnNativeTerminal(kind string, task *flowdb.Task, launch terminalLaunch) error {

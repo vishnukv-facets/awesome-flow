@@ -27,6 +27,13 @@ const anyProviderAvailable = () => {
   const providers = capabilityList('providers');
   return !providers.length || providers.some(p => p.available);
 };
+const taskStartBlocker = (task = {}) => {
+  const waiting = String(task.waiting_on || '').trim();
+  if (waiting) return `Blocked: ${waiting}`;
+  const parent = task.parent || (task.parent_slug ? { slug: task.parent_slug, status: 'unknown' } : null);
+  if (parent && parent.status !== 'done') return `Depends on ${parent.slug}${parent.status ? ` (${parent.status})` : ''}`;
+  return '';
+};
 const missionGreeting = () => {
   const hour = new Date().getHours();
   if (hour < 12) return 'Good morning';
@@ -117,12 +124,13 @@ const MissionControl = ({ focus, setFocus, action, sort, setSort, goto }) => {
       </div>
       <div className="ribbon">
         {BACKLOG.length ? BACKLOG.map(b => {
-          const available = anyProviderAvailable();
+          const blockReason = taskStartBlocker(b);
+          const available = anyProviderAvailable() && !blockReason;
           return (
             <div
               key={b.slug}
               className={`ribbon-chip ${available ? '' : 'disabled'}`}
-              title={available ? 'Choose Claude or Codex' : 'No supported agent binary found on PATH'}
+              title={blockReason || (available ? 'Choose Claude or Codex' : 'No supported agent binary found on PATH')}
               onClick={() => available && action('spawn', b)}
             >
               <div className="top">
@@ -134,7 +142,7 @@ const MissionControl = ({ focus, setFocus, action, sort, setSort, goto }) => {
                 </span>
               </div>
               <div className="nm">{b.name}</div>
-              <div className="meta">{b.project}{b.due ? ` · due ${b.due}` : ''}{available ? ' · choose provider' : ' · no provider available'}</div>
+              <div className="meta">{b.project}{b.due ? ` · due ${b.due}` : ''}{blockReason ? ' · blocked' : (available ? ' · choose provider' : ' · no provider available')}</div>
               <DependencyBadges task={b} compact/>
             </div>
           );
@@ -1465,7 +1473,9 @@ const TasksList = ({ setFocus, action, goto }) => {
           </tr>
         </thead>
         <tbody>
-          {tasks.map(t => (
+          {tasks.map(t => {
+            const blockReason = taskStartBlocker(t);
+            return (
             <tr key={t.slug} style={{cursor: 'pointer'}} onClick={() => openTask(t)}>
               <td>{t.hasAgent && <Dot status={t.status}/>}</td>
               <td><StatusPill status={t.status_outer}/></td>
@@ -1482,7 +1492,7 @@ const TasksList = ({ setFocus, action, goto }) => {
                   {t.hasAgent ? (
                     <button className="btn sm primary" disabled={!isCapabilityAvailable('providers', t.provider || 'claude')} title={isCapabilityAvailable('providers', t.provider || 'claude') ? '' : capabilityReason('providers', t.provider || 'claude')} onClick={(e) => { e.stopPropagation(); action('attach', t); }}><Icon name="external-link" size={10}/>Open</button>
                   ) : t.status_outer === 'backlog' ? (
-                    <button className="btn sm green" disabled={!anyProviderAvailable()} title={anyProviderAvailable() ? 'Choose Claude or Codex' : 'No supported agent binary found on PATH'} onClick={(e) => { e.stopPropagation(); action('spawn', t); }}><Icon name="play" size={10}/>Spawn</button>
+                    <button className="btn sm green" disabled={!anyProviderAvailable() || !!blockReason} title={blockReason || (anyProviderAvailable() ? 'Choose Claude or Codex' : 'No supported agent binary found on PATH')} onClick={(e) => { e.stopPropagation(); action('spawn', t); }}><Icon name="play" size={10}/>Spawn</button>
                   ) : (
                     <button className="btn sm" onClick={(e) => { e.stopPropagation(); goto && goto(`session/${t.slug}`); }}><Icon name="check-circle" size={10}/>Details</button>
                   )}
@@ -1490,7 +1500,7 @@ const TasksList = ({ setFocus, action, goto }) => {
                 </div>
               </td>
             </tr>
-          ))}
+          );})}
         </tbody>
       </table>
     </div>

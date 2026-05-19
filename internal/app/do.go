@@ -106,6 +106,12 @@ func cmdDo(args []string) int {
 	if rc != 0 {
 		return rc
 	}
+	if task.Status != "done" {
+		if err := flowdb.EnsureTaskStartable(db, task); err != nil {
+			fmt.Fprintf(os.Stderr, "error: %v\n", err)
+			return 1
+		}
+	}
 	provider := task.SessionProvider
 	if provider == "" {
 		provider = sessionProviderClaude
@@ -635,6 +641,10 @@ func cmdDoHere(query string, force bool, requestedProvider string) int {
 		fmt.Fprintf(os.Stderr,
 			"error: task %q is done; reopen it first via `flow update task %s --status in-progress` (after which --here is unnecessary — the prior session_id is preserved)\n",
 			task.Slug, task.Slug)
+		return 1
+	}
+	if err := flowdb.EnsureTaskStartable(db, task); err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		return 1
 	}
 

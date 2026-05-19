@@ -235,6 +235,107 @@ type Task struct {
 	DeletedAt          sql.NullString
 }
 
+// TaskStartBlocker describes why a task session must not be started yet.
+type TaskStartBlocker struct {
+	Kind          string
+	TaskSlug      string
+	WaitingOn     string
+	ParentSlug    string
+	ParentName    string
+	ParentStatus  string
+	ParentDeleted bool
+}
+
+func (b *TaskStartBlocker) Error() string {
+	if b == nil {
+		return ""
+	}
+	switch b.Kind {
+	case "waiting":
+		return fmt.Sprintf("task %q is blocked: waiting on %s", b.TaskSlug, b.WaitingOn)
+	case "dependency":
+		status := b.ParentStatus
+		if status == "" {
+			status = "unknown"
+		}
+		extra := ""
+		if b.ParentDeleted {
+			extra = " and is deleted"
+		}
+		if b.ParentName != "" {
+			return fmt.Sprintf("task %q depends on %q (%s, %s%s); complete or clear the dependency before starting",
+				b.TaskSlug, b.ParentSlug, b.ParentName, status, extra)
+		}
+		return fmt.Sprintf("task %q depends on %q (%s%s); complete or clear the dependency before starting",
+			b.TaskSlug, b.ParentSlug, status, extra)
+	default:
+		return fmt.Sprintf("task %q is blocked", b.TaskSlug)
+	}
+}
+
+// TaskStartBlockerFor returns the reason a task should not start, if any.
+// waiting_on is an explicit blocker. parent_slug is a task dependency:
+// the child cannot start until the parent is done.
+func TaskStartBlockerFor(db *sql.DB, task *Task) (*TaskStartBlocker, error) {
+	if task == nil {
+		return nil, errors.New("task is nil")
+	}
+	if waiting := strings.TrimSpace(task.WaitingOn.String); task.WaitingOn.Valid && waiting != "" {
+		return &TaskStartBlocker{
+			Kind:      "waiting",
+			TaskSlug:  task.Slug,
+			WaitingOn: waiting,
+		}, nil
+	}
+	parentSlug := strings.TrimSpace(task.ParentSlug.String)
+	if !task.ParentSlug.Valid || parentSlug == "" {
+		return nil, nil
+	}
+	var parent struct {
+		Name      string
+		Status    string
+		DeletedAt sql.NullString
+	}
+	err := db.QueryRow(
+		`SELECT name, status, deleted_at FROM tasks WHERE slug = ?`,
+		parentSlug,
+	).Scan(&parent.Name, &parent.Status, &parent.DeletedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return &TaskStartBlocker{
+			Kind:       "dependency",
+			TaskSlug:   task.Slug,
+			ParentSlug: parentSlug,
+		}, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	if parent.Status == "done" && !parent.DeletedAt.Valid {
+		return nil, nil
+	}
+	return &TaskStartBlocker{
+		Kind:          "dependency",
+		TaskSlug:      task.Slug,
+		ParentSlug:    parentSlug,
+		ParentName:    parent.Name,
+		ParentStatus:  parent.Status,
+		ParentDeleted: parent.DeletedAt.Valid,
+	}, nil
+}
+
+// EnsureTaskStartable fails when task dependencies or blockers say the task
+// should not be started.
+func EnsureTaskStartable(db *sql.DB, task *Task) error {
+	blocker, err := TaskStartBlockerFor(db, task)
+	if err != nil {
+		return err
+	}
+	if blocker != nil {
+		return blocker
+	}
+	return nil
+}
+
 // Workdir mirrors the workdirs convenience registry.
 type Workdir struct {
 	Path        string
