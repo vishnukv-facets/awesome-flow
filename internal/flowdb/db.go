@@ -89,39 +89,6 @@ CREATE TABLE IF NOT EXISTS task_tags (
     PRIMARY KEY (task_slug, tag)
 );
 
-CREATE TABLE IF NOT EXISTS monitor_events (
-    id             TEXT PRIMARY KEY,
-    source         TEXT NOT NULL,
-    kind           TEXT NOT NULL,
-    source_id      TEXT NOT NULL,
-    title          TEXT NOT NULL,
-    body           TEXT,
-    url            TEXT,
-    severity       TEXT NOT NULL DEFAULT 'medium' CHECK (severity IN ('low','medium','high')),
-    status         TEXT NOT NULL DEFAULT 'new' CHECK (status IN ('new','notified','approved','ignored','started','done')),
-    first_seen_at  TEXT NOT NULL,
-    last_seen_at   TEXT NOT NULL,
-    last_seq       INTEGER NOT NULL DEFAULT 0,
-    raw_json       TEXT,
-    UNIQUE(source, source_id)
-);
-
-CREATE TABLE IF NOT EXISTS monitor_notifications (
-    id          TEXT PRIMARY KEY,
-    event_id    TEXT NOT NULL REFERENCES monitor_events(id) ON DELETE CASCADE,
-    title       TEXT NOT NULL,
-    body        TEXT,
-    level       TEXT NOT NULL DEFAULT 'info' CHECK (level IN ('info','approval','warning','success','error')),
-    status      TEXT NOT NULL DEFAULT 'unread' CHECK (status IN ('unread','read','dismissed','actioned')),
-    created_at  TEXT NOT NULL
-);
-
-CREATE TABLE IF NOT EXISTS monitor_notification_states (
-    id          TEXT PRIMARY KEY,
-    status      TEXT NOT NULL CHECK (status IN ('unread','read','dismissed','actioned')),
-    updated_at  TEXT NOT NULL
-);
-
 CREATE TABLE IF NOT EXISTS agent_runtime_states (
     provider     TEXT NOT NULL CHECK (provider IN ('claude','codex')),
     session_id   TEXT NOT NULL,
@@ -133,104 +100,6 @@ CREATE TABLE IF NOT EXISTS agent_runtime_states (
     last_seq     INTEGER NOT NULL DEFAULT 0,
     raw_json     TEXT,
     PRIMARY KEY (provider, session_id)
-);
-
-CREATE TABLE IF NOT EXISTS automation_rules (
-    id          TEXT PRIMARY KEY,
-    source      TEXT NOT NULL,
-    kind        TEXT NOT NULL,
-    mode        TEXT NOT NULL CHECK (mode IN ('off','log','notify','approval','auto_task','auto_agent','auto_agent_draft_only','summarize')),
-    prompt_template TEXT,
-    project_slug    TEXT REFERENCES projects(slug),
-    work_dir        TEXT,
-    provider        TEXT CHECK (provider IS NULL OR provider IN ('claude','codex')),
-    read_only       INTEGER NOT NULL DEFAULT 1 CHECK (read_only IN (0,1)),
-    created_at  TEXT NOT NULL,
-    updated_at  TEXT NOT NULL,
-    UNIQUE(source, kind)
-);
-
-CREATE TABLE IF NOT EXISTS monitor_event_actions (
-    event_id    TEXT PRIMARY KEY REFERENCES monitor_events(id) ON DELETE CASCADE,
-    action      TEXT NOT NULL CHECK (action IN ('spawn','draft','ping','ignore')),
-    task_slug   TEXT REFERENCES tasks(slug) ON DELETE SET NULL,
-    note        TEXT,
-    created_at  TEXT NOT NULL
-);
-
-CREATE TABLE IF NOT EXISTS external_messages (
-    id               TEXT PRIMARY KEY,
-    source           TEXT NOT NULL,
-    event_id         TEXT REFERENCES monitor_events(id) ON DELETE SET NULL,
-    conversation_id  TEXT NOT NULL,
-    channel_id       TEXT,
-    thread_ts        TEXT,
-    message_ts       TEXT NOT NULL,
-    direction        TEXT NOT NULL CHECK (direction IN ('inbound','outbound')),
-    sender_id        TEXT,
-    sender_name      TEXT,
-    text             TEXT NOT NULL,
-    normalized_text  TEXT,
-    intent           TEXT,
-    confidence_basis TEXT,
-    task_slug        TEXT REFERENCES tasks(slug) ON DELETE SET NULL,
-    raw_json         TEXT,
-    created_at       TEXT NOT NULL,
-    UNIQUE(source, conversation_id, message_ts, direction)
-);
-
-CREATE TABLE IF NOT EXISTS external_message_actions (
-    id            TEXT PRIMARY KEY,
-    source        TEXT NOT NULL,
-    event_id      TEXT NOT NULL REFERENCES monitor_events(id) ON DELETE CASCADE,
-    message_id    TEXT REFERENCES external_messages(id) ON DELETE SET NULL,
-    action_type   TEXT NOT NULL CHECK (action_type IN ('reaction_add','status_reply','clarifying_question','final_answer','draft_ack','working_ack','task_draft','post_failed','skipped')),
-    status        TEXT NOT NULL CHECK (status IN ('pending','sent','failed','skipped')),
-    task_slug     TEXT REFERENCES tasks(slug) ON DELETE SET NULL,
-    payload_json  TEXT,
-    response_json TEXT,
-    error         TEXT,
-    auto_approved INTEGER NOT NULL DEFAULT 0 CHECK (auto_approved IN (0,1)),
-    created_at    TEXT NOT NULL,
-    UNIQUE(source, event_id, action_type)
-);
-
--- monitor_sync_state tracks the most recent ingest attempt per source so the
--- Inbox UI can show "Slack synced 23s ago" / "GitHub syncing now" without
--- polling the API. One row per source (github, slack, etc.); written by the
--- monitor poller or event listeners. last_status is "ok" or "error"; last_error
--- carries the first error message when status='error', NULL on ok.
--- is_syncing is a momentary lock: set when ingest starts, cleared at end.
-CREATE TABLE IF NOT EXISTS monitor_sync_state (
-    source        TEXT PRIMARY KEY,
-    last_sync_at  TEXT,
-    last_status   TEXT NOT NULL DEFAULT 'unknown' CHECK (last_status IN ('unknown','ok','error')),
-    last_error    TEXT,
-    is_syncing    INTEGER NOT NULL DEFAULT 0 CHECK (is_syncing IN (0,1)),
-    updated_at    TEXT NOT NULL
-);
-
--- monitor_fetch_state is a lightweight cursor table for ingesters that need
--- to rotate across many upstream objects without refetching all of them on
--- every tick.
-CREATE TABLE IF NOT EXISTS monitor_fetch_state (
-    source          TEXT NOT NULL,
-    target_id       TEXT NOT NULL,
-    last_fetched_at TEXT NOT NULL,
-    updated_at      TEXT NOT NULL,
-    PRIMARY KEY (source, target_id)
-);
-
-CREATE TABLE IF NOT EXISTS task_pr_links (
-    task_slug   TEXT NOT NULL REFERENCES tasks(slug) ON DELETE CASCADE,
-    repo        TEXT NOT NULL,
-    pr_number   INTEGER NOT NULL,
-    pr_url      TEXT NOT NULL,
-    state       TEXT NOT NULL DEFAULT 'open' CHECK (state IN ('open','merged','closed')),
-    merged_at   TEXT,
-    created_at  TEXT NOT NULL,
-    updated_at  TEXT NOT NULL,
-    PRIMARY KEY (task_slug, repo, pr_number)
 );
 
 -- Many-to-many task dependencies. A child can depend on N parents;
@@ -287,21 +156,8 @@ CREATE INDEX IF NOT EXISTS idx_tasks_project    ON tasks(project_slug);
 CREATE INDEX IF NOT EXISTS idx_tasks_status     ON tasks(status);
 CREATE INDEX IF NOT EXISTS idx_tasks_updated_at ON tasks(updated_at);
 CREATE INDEX IF NOT EXISTS idx_task_tags_tag    ON task_tags(tag);
-CREATE INDEX IF NOT EXISTS idx_monitor_events_seen ON monitor_events(last_seen_at);
-CREATE INDEX IF NOT EXISTS idx_monitor_events_status ON monitor_events(status);
-CREATE INDEX IF NOT EXISTS idx_monitor_notifications_status ON monitor_notifications(status);
-CREATE INDEX IF NOT EXISTS idx_monitor_notification_states_status ON monitor_notification_states(status);
-CREATE INDEX IF NOT EXISTS idx_monitor_fetch_state_source_last ON monitor_fetch_state(source, last_fetched_at);
 CREATE INDEX IF NOT EXISTS idx_agent_runtime_states_task ON agent_runtime_states(task_slug);
 CREATE INDEX IF NOT EXISTS idx_agent_runtime_states_updated ON agent_runtime_states(updated_at);
-CREATE INDEX IF NOT EXISTS idx_automation_rules_source_kind ON automation_rules(source, kind);
-CREATE INDEX IF NOT EXISTS idx_task_pr_links_state ON task_pr_links(state);
-CREATE INDEX IF NOT EXISTS idx_task_pr_links_repo_number ON task_pr_links(repo, pr_number);
-CREATE INDEX IF NOT EXISTS idx_monitor_event_actions_action ON monitor_event_actions(action);
-CREATE INDEX IF NOT EXISTS idx_external_messages_event ON external_messages(event_id);
-CREATE INDEX IF NOT EXISTS idx_external_messages_conversation ON external_messages(source, conversation_id, thread_ts, message_ts);
-CREATE INDEX IF NOT EXISTS idx_external_message_actions_event ON external_message_actions(event_id);
-CREATE INDEX IF NOT EXISTS idx_external_message_actions_type ON external_message_actions(action_type);
 CREATE INDEX IF NOT EXISTS idx_task_dependencies_parent ON task_dependencies(parent_slug);
 CREATE INDEX IF NOT EXISTS idx_task_dependencies_child ON task_dependencies(child_slug);
 CREATE INDEX IF NOT EXISTS idx_search_docs_scope ON search_docs(scope);
@@ -818,6 +674,29 @@ func OpenDB(path string) (*sql.DB, error) {
 }
 
 func runMigrations(db *sql.DB) error {
+	// Wipe legacy inbox/monitor/slack/github tables on boot. The feature
+	// was removed; any existing user install still has data sitting in
+	// these tables that the current code no longer touches. Dropping them
+	// on first boot of the post-removal binary frees the DB pages and
+	// removes the dangling FK targets cleanly.
+	for _, t := range []string{
+		"monitor_events",
+		"monitor_notifications",
+		"monitor_notification_states",
+		"monitor_event_actions",
+		"monitor_sync_state",
+		"monitor_fetch_state",
+		"automation_rules",
+		"external_messages",
+		"external_message_actions",
+		"task_pr_links",
+		"slack_oauth_tokens",
+	} {
+		if _, err := db.Exec("DROP TABLE IF EXISTS " + t); err != nil {
+			return fmt.Errorf("drop legacy %s: %w", t, err)
+		}
+	}
+
 	has, err := columnExists(db, "workdirs", "description")
 	if err != nil {
 		return err
@@ -927,39 +806,17 @@ func runMigrations(db *sql.DB) error {
 		}
 	}
 
-	// last_seq columns for monotonic ordering of hook events. The agent
-	// harness only stamps RFC3339 timestamps which collide on bursty
-	// writes; the agent-side seq (time.UnixNano) breaks ties unambiguously.
-	for _, table := range []string{"monitor_events", "agent_runtime_states"} {
-		has, err = columnExists(db, table, "last_seq")
-		if err != nil {
-			return err
-		}
-		if !has {
-			if _, err := db.Exec(fmt.Sprintf(`ALTER TABLE %s ADD COLUMN last_seq INTEGER NOT NULL DEFAULT 0`, table)); err != nil {
-				return fmt.Errorf("add %s.last_seq: %w", table, err)
-			}
-		}
+	// last_seq column on agent_runtime_states for monotonic ordering of
+	// hook events. The agent harness only stamps RFC3339 timestamps which
+	// collide on bursty writes; the agent-side seq (time.UnixNano) breaks
+	// ties unambiguously.
+	has, err = columnExists(db, "agent_runtime_states", "last_seq")
+	if err != nil {
+		return err
 	}
-
-	for _, col := range []struct {
-		name string
-		ddl  string
-	}{
-		{"prompt_template", `ALTER TABLE automation_rules ADD COLUMN prompt_template TEXT`},
-		{"project_slug", `ALTER TABLE automation_rules ADD COLUMN project_slug TEXT REFERENCES projects(slug)`},
-		{"work_dir", `ALTER TABLE automation_rules ADD COLUMN work_dir TEXT`},
-		{"provider", `ALTER TABLE automation_rules ADD COLUMN provider TEXT`},
-		{"read_only", `ALTER TABLE automation_rules ADD COLUMN read_only INTEGER NOT NULL DEFAULT 1`},
-	} {
-		has, err = columnExists(db, "automation_rules", col.name)
-		if err != nil {
-			return err
-		}
-		if !has {
-			if _, err := db.Exec(col.ddl); err != nil {
-				return fmt.Errorf("add automation_rules.%s: %w", col.name, err)
-			}
+	if !has {
+		if _, err := db.Exec(`ALTER TABLE agent_runtime_states ADD COLUMN last_seq INTEGER NOT NULL DEFAULT 0`); err != nil {
+			return fmt.Errorf("add agent_runtime_states.last_seq: %w", err)
 		}
 	}
 
@@ -1990,18 +1847,6 @@ func RenameTask(db *sql.DB, oldSlug, newSlug string) error {
 	}
 	if _, err := tx.Exec(`UPDATE task_tags SET task_slug=? WHERE task_slug=?`, newSlug, oldSlug); err != nil {
 		return fmt.Errorf("cascade task_tags.task_slug: %w", err)
-	}
-	if _, err := tx.Exec(`UPDATE task_pr_links SET task_slug=? WHERE task_slug=?`, newSlug, oldSlug); err != nil {
-		return fmt.Errorf("cascade task_pr_links.task_slug: %w", err)
-	}
-	if _, err := tx.Exec(`UPDATE monitor_event_actions SET task_slug=? WHERE task_slug=?`, newSlug, oldSlug); err != nil {
-		return fmt.Errorf("cascade monitor_event_actions.task_slug: %w", err)
-	}
-	if _, err := tx.Exec(`UPDATE external_messages SET task_slug=? WHERE task_slug=?`, newSlug, oldSlug); err != nil {
-		return fmt.Errorf("cascade external_messages.task_slug: %w", err)
-	}
-	if _, err := tx.Exec(`UPDATE external_message_actions SET task_slug=? WHERE task_slug=?`, newSlug, oldSlug); err != nil {
-		return fmt.Errorf("cascade external_message_actions.task_slug: %w", err)
 	}
 	if _, err := tx.Exec(`UPDATE agent_runtime_states SET task_slug=? WHERE task_slug=?`, newSlug, oldSlug); err != nil {
 		return fmt.Errorf("cascade agent_runtime_states.task_slug: %w", err)

@@ -40,7 +40,7 @@ func insertTask(t *testing.T, db *sql.DB, slug, name, status, priority, wd strin
 
 func TestOpenDBCreatesSchema(t *testing.T) {
 	db := openTempDB(t)
-	for _, tbl := range []string{"projects", "tasks", "workdirs", "monitor_notification_states"} {
+	for _, tbl := range []string{"projects", "tasks", "workdirs", "agent_runtime_states"} {
 		var name string
 		err := db.QueryRow("SELECT name FROM sqlite_master WHERE type='table' AND name=?", tbl).Scan(&name)
 		if err != nil {
@@ -186,42 +186,6 @@ func TestRenameTaskCascadesTaskSlugReferences(t *testing.T) {
 	if _, err := db.Exec(`INSERT INTO task_tags (task_slug, tag, created_at) VALUES ('old-task', 'slack', ?)`, now); err != nil {
 		t.Fatal(err)
 	}
-	if err := UpsertTaskPRLink(db, "old-task", "acme/repo", 42, "https://github.com/acme/repo/pull/42"); err != nil {
-		t.Fatal(err)
-	}
-	event, _, err := InsertMonitorEventIfNew(db, MonitorEventInput{
-		Source:   "slack",
-		Kind:     "mention",
-		SourceID: "C1:1710000001.000001",
-		Title:    "Slack mention",
-		Severity: "medium",
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := RecordMonitorEventAction(db, event.ID, "spawn", "old-task", ""); err != nil {
-		t.Fatal(err)
-	}
-	if _, _, err := RecordExternalMessage(db, ExternalMessageInput{
-		Source:         "slack",
-		EventID:        string(event.ID),
-		ConversationID: "C1",
-		MessageTS:      "1710000001.000001",
-		Direction:      "inbound",
-		Text:           "hi",
-		TaskSlug:       "old-task",
-	}); err != nil {
-		t.Fatal(err)
-	}
-	if err := RecordExternalAction(db, ExternalActionInput{
-		Source:     "slack",
-		EventID:    string(event.ID),
-		ActionType: "working_ack",
-		Status:     "sent",
-		TaskSlug:   "old-task",
-	}); err != nil {
-		t.Fatal(err)
-	}
 	if err := UpsertAgentRuntimeState(db, AgentRuntimeStateInput{
 		Provider:  "claude",
 		SessionID: "session-1",
@@ -254,10 +218,6 @@ func TestRenameTaskCascadesTaskSlugReferences(t *testing.T) {
 	assertCount(`SELECT COUNT(*) FROM task_dependencies WHERE child_slug = 'new-task' AND parent_slug = 'parent-task'`, 1)
 	assertCount(`SELECT COUNT(*) FROM task_dependencies WHERE child_slug = 'child-task' AND parent_slug = 'new-task'`, 1)
 	assertCount(`SELECT COUNT(*) FROM task_tags WHERE task_slug = 'new-task' AND tag = 'slack'`, 1)
-	assertCount(`SELECT COUNT(*) FROM task_pr_links WHERE task_slug = 'new-task' AND repo = 'acme/repo' AND pr_number = 42`, 1)
-	assertCount(`SELECT COUNT(*) FROM monitor_event_actions WHERE task_slug = 'new-task'`, 1)
-	assertCount(`SELECT COUNT(*) FROM external_messages WHERE task_slug = 'new-task'`, 1)
-	assertCount(`SELECT COUNT(*) FROM external_message_actions WHERE task_slug = 'new-task'`, 1)
 	state, err := AgentRuntimeStateBySessionID(db, "claude", "session-1")
 	if err != nil {
 		t.Fatal(err)

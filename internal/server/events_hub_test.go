@@ -4,8 +4,6 @@ import (
 	"sync"
 	"testing"
 	"time"
-
-	"flow/internal/flowdb"
 )
 
 // TestEventHubPublishFanout pins the basic contract: publish reaches
@@ -112,44 +110,5 @@ func TestEventHubTypeFilter(t *testing.T) {
 	}
 	if delivered != 1 {
 		t.Fatalf("delivered = %d, want 1 (only matching event)", delivered)
-	}
-}
-
-func TestPublishInboxItemUsesNotificationLevelForNeedsReview(t *testing.T) {
-	root, db := testRootDB(t)
-	s := New(Config{DB: db, FlowRoot: root, Version: "test"})
-	sub := s.events.subscribe(eventFilter{Types: []string{"inbox_item"}})
-	defer s.events.unsubscribe(sub)
-
-	event, _, err := flowdb.InsertMonitorEventIfNew(db, flowdb.MonitorEventInput{
-		Source:   "slack",
-		Kind:     "personal_mention",
-		SourceID: "C123:1710000000.000001",
-		Title:    "Slack mention of you from Vishnu kv in #test-kv",
-		Body:     "@Vishnu kv hi",
-		Severity: "medium",
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := flowdb.CreateNotificationForEvent(db, *event, "approval"); err != nil {
-		t.Fatal(err)
-	}
-
-	s.publishInboxItem(*event, "", "")
-
-	select {
-	case env := <-sub.send:
-		if env.InboxItem == nil {
-			t.Fatalf("inbox_item payload = nil")
-		}
-		if env.InboxItem.Level != "approval" {
-			t.Fatalf("level = %q, want approval", env.InboxItem.Level)
-		}
-		if !env.InboxItem.NeedsReview {
-			t.Fatal("needs_review = false, want true for approval notification")
-		}
-	case <-time.After(100 * time.Millisecond):
-		t.Fatal("did not receive inbox_item event")
 	}
 }

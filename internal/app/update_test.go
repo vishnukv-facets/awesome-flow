@@ -1,7 +1,6 @@
 package app
 
 import (
-	"context"
 	"flow/internal/flowdb"
 	"os"
 	"path/filepath"
@@ -271,93 +270,6 @@ func TestCmdUpdateTaskWaitingMutuallyExclusive(t *testing.T) {
 		"--waiting", "Carol", "--clear-waiting"}); rc != 2 {
 		t.Errorf("rc=%d, want 2 when both given", rc)
 	}
-}
-
-func TestCmdUpdateTaskWaitingPostsSlackNoticeWhenSlackOrigin(t *testing.T) {
-	setupFlowRoot(t)
-	calls := stubSlackWaitingNoticeRunner(t, nil)
-	t.Setenv("FLOW_BASE_URL", "http://flow.example")
-
-	if rc := cmdAdd([]string{"task", "Investigate flaky test", "--slug", "ut-wait-slack"}); rc != 0 {
-		t.Fatalf("add rc=%d", rc)
-	}
-	db := openFlowDB(t)
-	seedSlackOriginAction(t, db, "ut-wait-slack", "C42", "1710000005.0001", "1710000000.0001")
-	db.Close()
-
-	if rc := cmdUpdate([]string{"task", "ut-wait-slack", "--waiting", "Bob's API answer"}); rc != 0 {
-		t.Fatalf("update rc=%d", rc)
-	}
-	if len(*calls) != 1 {
-		t.Fatalf("calls = %d, want 1", len(*calls))
-	}
-	got := (*calls)[0]
-	if got.channel != "C42" {
-		t.Errorf("channel = %q, want C42", got.channel)
-	}
-	if got.threadTS != "1710000000.0001" {
-		t.Errorf("threadTS = %q, want existing thread parent", got.threadTS)
-	}
-	wantSubstr := []string{
-		`"Investigate flaky test"`,
-		"Bob's API answer",
-		"http://flow.example/tasks/ut-wait-slack",
-	}
-	for _, s := range wantSubstr {
-		if !contains(got.text, s) {
-			t.Errorf("text missing %q; got: %s", s, got.text)
-		}
-	}
-}
-
-func TestCmdUpdateTaskClearWaitingDoesNotPostSlackNotice(t *testing.T) {
-	// Quiet recovery: clearing waiting_on should NOT announce "I'm not
-	// stuck anymore" in the originating thread. The trigger only fires
-	// on setting a new waiting_on text.
-	setupFlowRoot(t)
-	calls := stubSlackWaitingNoticeRunner(t, nil)
-	if rc := cmdAdd([]string{"task", "Recovery", "--slug", "ut-wait-clear"}); rc != 0 {
-		t.Fatalf("add rc=%d", rc)
-	}
-	db := openFlowDB(t)
-	seedSlackOriginAction(t, db, "ut-wait-clear", "D1", "1.001", "")
-	// Pre-set waiting_on so we can clear it.
-	if _, err := db.Exec(`UPDATE tasks SET waiting_on='whatever' WHERE slug='ut-wait-clear'`); err != nil {
-		t.Fatal(err)
-	}
-	db.Close()
-	if rc := cmdUpdate([]string{"task", "ut-wait-clear", "--clear-waiting"}); rc != 0 {
-		t.Fatalf("update rc=%d", rc)
-	}
-	if len(*calls) != 0 {
-		t.Errorf("clearing waiting_on must not post; got %d calls", len(*calls))
-	}
-}
-
-func TestCmdUpdateTaskWaitingNonSlackOriginIsNoop(t *testing.T) {
-	setupFlowRoot(t)
-	calls := stubSlackWaitingNoticeRunner(t, nil)
-	seedTask(t, "ut-wait-adhoc")
-	if rc := cmdUpdate([]string{"task", "ut-wait-adhoc", "--waiting", "anyone"}); rc != 0 {
-		t.Fatalf("update rc=%d", rc)
-	}
-	if len(*calls) != 0 {
-		t.Errorf("non-slack origin must not post; got %d", len(*calls))
-	}
-}
-
-// stubSlackWaitingNoticeRunner mirrors stubSlackDoneNoticeRunner in
-// done_test.go — same shape, different package-level seam.
-func stubSlackWaitingNoticeRunner(t *testing.T, retErr error) *[]capturedSlackNotice {
-	t.Helper()
-	old := slackWaitingNoticeRunner
-	calls := &[]capturedSlackNotice{}
-	slackWaitingNoticeRunner = func(_ context.Context, channel, threadTS, text string) error {
-		*calls = append(*calls, capturedSlackNotice{channel: channel, threadTS: threadTS, text: text})
-		return retErr
-	}
-	t.Cleanup(func() { slackWaitingNoticeRunner = old })
-	return calls
 }
 
 func TestCmdUpdateTaskParent(t *testing.T) {
