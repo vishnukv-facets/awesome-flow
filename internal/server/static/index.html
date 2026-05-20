@@ -1440,7 +1440,7 @@ button.readable-file-head:focus-visible { outline: 1px solid var(--primary); out
 <script type="text/babel">
 const { useState, useEffect, useMemo, useRef, useContext, Fragment } = React;
 const { ClockProvider, ClockCtx, AGENTS, DEAD_AGENT, DONE_AGENTS = [], BACKLOG, DONE_TASKS = [], PROJECTS_MC, PLAYBOOKS_MC, WORKDIRS, KB_FILES, ACTIVITY_HEATMAP, TRASH = { tasks: [], projects: [], playbooks: [], total: 0 }, Icon, Dot, FlowLogo, FlowMark } = window.MC;
-const { MissionControl, InboxView, SessionsGrid, SessionDetail, CompletedSessionView, TasksList, ProjectsList, ProjectDetail, PlaybooksList, PlaybookDetail, TrashView, KBView, WorkdirsView, CommandPalette, QRModal, ConfirmModal, ShortcutsOverlay, CreateFlowModal } = window.MC_SCREENS;
+const { MissionControl, SessionsGrid, SessionDetail, CompletedSessionView, TasksList, ProjectsList, ProjectDetail, PlaybooksList, PlaybookDetail, TrashView, KBView, WorkdirsView, CommandPalette, QRModal, ConfirmModal, ShortcutsOverlay, CreateFlowModal } = window.MC_SCREENS;
 
 const NAV = [
   { group: 'core', items: [
@@ -1455,7 +1455,6 @@ const NAV = [
     { id: 'kb', label: 'KB', icon: 'book-open', kbd: 'g k' },
   ]},
   { group: 'review', items: [
-    { id: 'inbox', label: 'Inbox', icon: 'inbox', kbd: 'g i' },
     { id: 'trash', label: 'Trash', icon: 'trash-2', kbd: 'g x' },
   ]},
 ];
@@ -2417,7 +2416,6 @@ const App = () => {
         {isPlaybook && <PlaybookDetail slug={playbookSlug} goto={goto} action={action}/>}
         {route === 'workdirs' && <WorkdirsView action={action}/>}
         {route === 'kb' && <KBView/>}
-        {route === 'inbox' && <InboxView action={action} goto={goto}/>}
         {route === 'trash' && <TrashView action={action}/>}
       </main>
 

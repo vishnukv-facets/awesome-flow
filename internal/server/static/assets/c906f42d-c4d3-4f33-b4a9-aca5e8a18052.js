@@ -3518,7 +3518,7 @@ const ShortcutsOverlay = ({ onClose }) => (
 );
 
 window.MC_SCREENS = {
-  MissionControl, InboxView, SessionsGrid, SessionDetail, CompletedSessionView, TasksList, ProjectsList, ProjectDetail, PlaybooksList, PlaybookDetail,
+  MissionControl, SessionsGrid, SessionDetail, CompletedSessionView, TasksList, ProjectsList, ProjectDetail, PlaybooksList, PlaybookDetail,
   TrashView, KBView, WorkdirsView,
   CommandPalette, QRModal, ConfirmModal, ShortcutsOverlay, CreateFlowModal,
 };
