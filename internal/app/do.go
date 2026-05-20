@@ -85,6 +85,10 @@ func cmdDo(args []string) int {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		return 2
 	}
+	if *noWorktree {
+		fmt.Fprintln(os.Stderr, "error: --no-worktree is no longer supported; task sessions must run in per-task worktrees when the work_dir is a git repository")
+		return 2
+	}
 
 	if *here {
 		return cmdDoHere(query, *force, requestedProvider)
@@ -322,23 +326,23 @@ func cmdDo(args []string) int {
 	// on branch flow/<slug>. This isolates concurrent task sessions in the
 	// same project from each other's working tree. Non-repo work_dirs (e.g.
 	// auto-created task workspaces) fall through unchanged.
-	if !*noWorktree {
-		wt, wtErr := worktree.Ensure(task.WorkDir, provider, task.Slug)
-		if wtErr != nil {
-			fmt.Fprintf(os.Stderr, "warning: worktree setup failed, using work_dir directly: %v\n", wtErr)
-		} else if wt.IsRepo {
-			cwd = wt.WorktreePath
-			if _, err := db.Exec(
-				`UPDATE tasks SET worktree_path = ?, updated_at = ? WHERE slug = ?`,
-				wt.WorktreePath, flowdb.NowISO(), task.Slug,
-			); err != nil {
-				fmt.Fprintf(os.Stderr, "warning: persist worktree_path: %v\n", err)
-			} else {
-				task.WorktreePath = sql.NullString{String: wt.WorktreePath, Valid: true}
-			}
-			if wt.Created {
-				fmt.Printf("Created worktree %s on branch %s (from %s)\n", wt.WorktreePath, wt.Branch, wt.BaseBranch)
-			}
+	wt, wtErr := worktree.Ensure(task.WorkDir, provider, task.Slug)
+	if wtErr != nil {
+		fmt.Fprintf(os.Stderr, "error: worktree setup failed: %v\n", wtErr)
+		return 1
+	}
+	if wt.IsRepo {
+		cwd = wt.WorktreePath
+		if _, err := db.Exec(
+			`UPDATE tasks SET worktree_path = ?, updated_at = ? WHERE slug = ?`,
+			wt.WorktreePath, flowdb.NowISO(), task.Slug,
+		); err != nil {
+			fmt.Fprintf(os.Stderr, "error: persist worktree_path: %v\n", err)
+			return 1
+		}
+		task.WorktreePath = sql.NullString{String: wt.WorktreePath, Valid: true}
+		if wt.Created {
+			fmt.Printf("Created worktree %s on branch %s (from %s)\n", wt.WorktreePath, wt.Branch, wt.BaseBranch)
 		}
 	}
 

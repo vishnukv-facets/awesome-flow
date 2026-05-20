@@ -2237,7 +2237,7 @@ const TasksList = ({ setFocus, action, goto }) => {
                   ) : (
                     <button className="btn sm" onClick={(e) => { e.stopPropagation(); goto && goto(`session/${t.slug}`); }}><Icon name="check-circle" size={10}/>Details</button>
                   )}
-                  <button className="btn sm danger" title="Delete task" onClick={(e) => { e.stopPropagation(); action('delete', t); }}><Icon name="trash-2" size={10}/>Delete</button>
+                  <button className="btn sm" title="Archive task" onClick={(e) => { e.stopPropagation(); action('delete', t); }}><Icon name="archive" size={10}/>Archive</button>
                 </div>
               </td>
             </tr>
@@ -2262,7 +2262,7 @@ const ProjectsList = ({ goto, action }) => (
               <div className="tile-head">
                 <span className="mono" style={{fontSize: 12, fontWeight: 600, color: 'var(--text)'}}>{p.slug}</span>
                 <span style={{marginLeft: 'auto'}}><PriorityPill priority={p.priority}/></span>
-                <button className="btn sm danger" title="Delete project" onClick={(e) => { e.stopPropagation(); action('delete', { ...p, kind: 'project' }); }}><Icon name="trash-2" size={10}/></button>
+                <button className="btn sm" title="Archive project" onClick={(e) => { e.stopPropagation(); action('delete', { ...p, kind: 'project' }); }}><Icon name="archive" size={10}/></button>
               </div>
               <div className="tile-name">{p.name}</div>
               <div className="mono" style={{fontSize: 11, color: 'var(--text-dim)'}}>{t.total} tasks · {t.in_progress} in progress · {t.backlog} backlog · {t.done} done</div>
@@ -2292,7 +2292,7 @@ const PlaybooksList = ({ action, goto }) => (
               <span className="mono" style={{fontSize: 12, fontWeight: 600, color: 'var(--text)'}}>{p.slug}</span>
               {p.project && <span className="tag-chip" style={{marginLeft: 4}}>{p.project}</span>}
               <button className="btn sm primary" style={{marginLeft: 'auto'}} disabled={!anyProviderAvailable()} title={anyProviderAvailable() ? '' : 'No supported agent binary found on PATH'} onClick={(e) => { e.stopPropagation(); action('spawn-run', { ...p, provider: defaultAvailableProvider() }); }}><Icon name="play" size={11}/>Spawn run</button>
-              <button className="btn sm danger" title="Delete playbook" onClick={(e) => { e.stopPropagation(); action('delete', { ...p, kind: 'playbook' }); }}><Icon name="trash-2" size={10}/></button>
+              <button className="btn sm" title="Archive playbook" onClick={(e) => { e.stopPropagation(); action('delete', { ...p, kind: 'playbook' }); }}><Icon name="archive" size={10}/></button>
             </div>
             <div className="tile-name">{p.name}</div>
             <div className="mono" style={{fontSize: 11, color: 'var(--text-dim)'}}>
@@ -2662,7 +2662,7 @@ const PlaybookDetail = ({ slug, goto, action }) => {
         </div>
         <div className="entity-hero-actions">
           <button className="btn sm" onClick={() => { setDraftBrief(brief); setEditMode(true); }}><Icon name="edit-2" size={11}/>Edit</button>
-          <button className="btn sm danger" onClick={() => action('delete', { ...pb, kind: 'playbook' })}><Icon name="trash-2" size={11}/>Delete</button>
+          <button className="btn sm" onClick={() => action('delete', { ...pb, kind: 'playbook' })}><Icon name="archive" size={11}/>Archive</button>
           <button className="btn sm primary" disabled={!anyProviderAvailable()} title={anyProviderAvailable() ? '' : 'No supported agent binary found on PATH'} onClick={() => action('spawn-run', { ...pb, provider: defaultAvailableProvider() })}><Icon name="play" size={11}/>Spawn run</button>
         </div>
       </div>
@@ -2862,7 +2862,7 @@ const ProjectDetail = ({ slug, goto, action, onAddTask, refreshKey }) => {
         <div className="entity-hero-actions">
           <button className="btn sm" onClick={() => { setDraftBrief(brief); setEditMode(true); }}><Icon name="edit-2" size={11}/>Edit</button>
           <button className="btn sm primary" onClick={() => onAddTask && onAddTask(pr.slug)}><Icon name="plus" size={11}/>Add task</button>
-          <button className="btn sm danger" onClick={() => action('delete', { ...pr, kind: 'project' })}><Icon name="trash-2" size={11}/>Delete</button>
+          <button className="btn sm" onClick={() => action('delete', { ...pr, kind: 'project' })}><Icon name="archive" size={11}/>Archive</button>
         </div>
       </div>
       {loadState.error && <div className="pane" style={{padding: 12, marginTop: 12, borderColor: 'var(--dead)'}}><span className="mono" style={{fontSize: 11, color: 'var(--dead)'}}>{loadState.error}</span></div>}
@@ -3001,7 +3001,10 @@ const TrashView = ({ action }) => {
                     <td className="mono" style={{fontSize: 11, color: 'var(--text-dim)'}}>{item.project || '—'}</td>
                     <td className="mono" style={{fontSize: 11, color: 'var(--text-dim)'}}>{deletedAgo(item.deleted_at)}</td>
                     <td style={{textAlign: 'right'}}>
-                      <button className="btn sm primary" onClick={() => action('restore', item)}><Icon name="rotate-ccw" size={11}/>Restore</button>
+                      <div className="row-attach" style={{justifyContent: 'flex-end'}}>
+                        <button className="btn sm primary" onClick={() => action('restore', item)}><Icon name="rotate-ccw" size={11}/>Restore</button>
+                        <button className="btn sm danger" onClick={() => action('destroy', item)}><Icon name="trash-2" size={11}/>Delete</button>
+                      </div>
                     </td>
                   </tr>
                 ))}
@@ -3073,28 +3076,55 @@ const KBView = () => {
 };
 
 // ───────── Workdirs ────────────────────────────────────────────────────
-const WorkdirsView = () => (
-  <div>
-    <div className="section-head"><h2>Workdirs</h2><span className="count mono">{WORKDIRS.length} registered</span></div>
-    <table className="table">
-      <thead>
-        <tr><th>Path</th><th>Name</th><th>Remote</th><th>Last used</th><th>Tasks</th><th></th></tr>
-      </thead>
-      <tbody>
-        {WORKDIRS.map(w => (
-          <tr key={w.path}>
-            <td className="mono" style={{fontSize: 11.5}}>{w.path}</td>
-            <td className="mono" style={{fontSize: 11.5}}>{w.name}</td>
-            <td className="mono" style={{fontSize: 11, color: 'var(--text-dim)'}}>{w.remote || '—'}</td>
-            <td className="mono" style={{fontSize: 11.5}}>{formatAge(w.used_min)} ago</td>
-            <td className="mono" style={{fontSize: 11.5, color: 'var(--text-dim)'}}>{w.tasks}</td>
-            <td>{w.untouched && <span className="pill stale">⚠ untouched 30d+</span>}</td>
-          </tr>
-        ))}
-      </tbody>
-    </table>
-  </div>
-);
+const WorkdirsView = ({ action }) => {
+  const [path, setPath] = useState('');
+  const [pickerOpen, setPickerOpen] = useState(false);
+  const submitAdd = (e) => {
+    e.preventDefault();
+    const cleanPath = path.trim();
+    if (!cleanPath) return;
+    action('workdir-add', { path: cleanPath });
+    setPath('');
+  };
+  return (
+    <div>
+      <div className="section-head"><h2>Workdirs</h2><span className="count mono">{WORKDIRS.length} registered</span></div>
+      <form className="pane" style={{padding: 12, marginBottom: 14}} onSubmit={submitAdd}>
+        <div style={{display: 'grid', gridTemplateColumns: 'minmax(320px, 1fr) auto', gap: 8, alignItems: 'center'}}>
+          <div className="path-picker" onClick={() => setPickerOpen(true)} title="Choose directory…">
+            <Icon name="folder" size={13}/>
+            <span className="path-picker-text mono">{path || 'Choose a directory…'}</span>
+            <span className="path-picker-btn mono">Browse…</span>
+          </div>
+          <button className="btn sm primary" type="submit"><Icon name="plus" size={11}/>Add</button>
+        </div>
+      </form>
+      {pickerOpen && <DirectoryPicker initial={path || WORKDIRS[0]?.path || ''} onPick={(p) => { setPath(p); setPickerOpen(false); }} onClose={() => setPickerOpen(false)}/>}
+      <table className="table">
+        <thead>
+          <tr><th>Path</th><th>Name</th><th>Remote</th><th>Last used</th><th>Tasks</th><th></th></tr>
+        </thead>
+        <tbody>
+          {WORKDIRS.map(w => (
+              <tr key={w.path}>
+                <td className="mono" style={{fontSize: 11.5}}>{w.path}</td>
+                <td className="mono" style={{fontSize: 11.5}}>{w.name}</td>
+                <td className="mono" style={{fontSize: 11, color: 'var(--text-dim)'}}>{w.remote || '—'}</td>
+                <td className="mono" style={{fontSize: 11.5}}>{formatAge(w.used_min)} ago</td>
+                <td className="mono" style={{fontSize: 11.5, color: 'var(--text-dim)'}}>{w.tasks}</td>
+                <td>
+                  <div className="row-attach" style={{justifyContent: 'flex-end'}}>
+                    {w.untouched && <span className="pill stale">untouched 30d+</span>}
+                    <button className="btn sm danger" type="button" onClick={() => action('workdir-remove', w)}><Icon name="trash-2" size={11}/>Remove</button>
+                  </div>
+                </td>
+              </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+};
 
 // ───────── Command Palette ─────────────────────────────────────────────
 const CommandPalette = ({ onClose, goto, action }) => {

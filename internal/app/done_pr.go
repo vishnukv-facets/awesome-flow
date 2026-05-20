@@ -134,6 +134,45 @@ func raiseDonePRForTask(db *sql.DB, task *flowdb.Task) (string, error) {
 	return prURL, nil
 }
 
+func openPRURLForTask(db *sql.DB, taskSlug string) string {
+	links, err := flowdb.ListTaskPRLinks(db, taskSlug)
+	if err != nil {
+		return ""
+	}
+	for _, link := range links {
+		if link.State == "open" && strings.TrimSpace(link.PRURL) != "" {
+			return link.PRURL
+		}
+	}
+	return ""
+}
+
+func mergeDonePRForTask(db *sql.DB, task *flowdb.Task, prURL string) error {
+	prURL = strings.TrimSpace(prURL)
+	if task == nil || prURL == "" {
+		return nil
+	}
+	if !task.WorktreePath.Valid || strings.TrimSpace(task.WorktreePath.String) == "" {
+		return nil
+	}
+	wt := task.WorktreePath.String
+	if _, err := os.Stat(wt); err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return fmt.Errorf("stat worktree %s: %w", wt, err)
+	}
+	if _, err := ghCmdRunner(wt, "pr", "merge", prURL, "--merge", "--delete-branch"); err != nil {
+		return err
+	}
+	if repo, num := parsePRURL(prURL); num > 0 {
+		if err := flowdb.MarkTaskPRMerged(db, task.Slug, repo, num, ""); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // firstHTTPSURL scans output line by line and returns the first whole
 // token that starts with "https://". `gh pr create` prints the URL on
 // its own line; this is a small allowance for surrounding chatter that

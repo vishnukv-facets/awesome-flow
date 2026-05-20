@@ -9,6 +9,7 @@ import (
 	"flow/internal/agents"
 	"flow/internal/flowdb"
 	"flow/internal/workdirreg"
+	"flow/internal/worktree"
 	"fmt"
 	"net/http"
 	"os"
@@ -689,7 +690,39 @@ func (s *Server) prepareTerminalLaunch(slug string) (terminalLaunch, error) {
 		return terminalLaunch{}, err
 	}
 
-	if err := workdirreg.Touch(s.cfg.DB, task.WorkDir); err != nil {
+	originalWorkDir := task.WorkDir
+	if task.Slug != overviewTaskSlug {
+		wt, wtErr := worktree.Ensure(originalWorkDir, provider, task.Slug)
+		if wtErr != nil {
+			if created {
+				s.rollbackPreparedTerminalLaunch(terminalLaunch{
+					Slug:      task.Slug,
+					SessionID: sessionID,
+					Provider:  provider,
+				})
+			}
+			return terminalLaunch{}, fmt.Errorf("worktree setup failed for %s: %w", task.Slug, wtErr)
+		}
+		if wt.IsRepo {
+			task.WorkDir = wt.WorktreePath
+			task.WorktreePath = sql.NullString{String: wt.WorktreePath, Valid: true}
+			if _, err := s.cfg.DB.Exec(
+				`UPDATE tasks SET worktree_path = ?, updated_at = ? WHERE slug = ?`,
+				wt.WorktreePath, flowdb.NowISO(), task.Slug,
+			); err != nil {
+				if created {
+					s.rollbackPreparedTerminalLaunch(terminalLaunch{
+						Slug:      task.Slug,
+						SessionID: sessionID,
+						Provider:  provider,
+					})
+				}
+				return terminalLaunch{}, fmt.Errorf("persist worktree_path: %w", err)
+			}
+		}
+	}
+
+	if err := workdirreg.Touch(s.cfg.DB, originalWorkDir); err != nil {
 		fmt.Fprintf(os.Stderr, "warning: bump workdir last_used_at: %v\n", err)
 	}
 	if _, err := agenthooks.InstallLocalWithOptions(task.WorkDir, agenthooks.InstallOptions{

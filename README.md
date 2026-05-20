@@ -208,13 +208,14 @@ handles the rest.
 - **Worktrees by default.** `flow do` creates a per-task git
   worktree at `<repo>/.<agent>/worktrees/<slug>` on branch
   `flow/<slug>`, so two parallel tasks on the same repo never
-  step on each other's working tree. `--no-worktree` opts out;
-  `flow do --here` binds the current Claude or Codex session and
-  never relocates.
+  step on each other's working tree. `flow do --here` binds the
+  current Claude or Codex session and never relocates.
 - **Auto-PR on done.** `flow done` pushes the worktree branch and
   runs `gh pr create` against the detected base branch with the
   task brief as the PR body. The PR URL is recorded against the
-  task. `--no-pr` opts out; push or PR failures warn and
+  task. After explicit user approval, pass `--merge` to merge the
+  opened or existing PR with `gh pr merge --merge --delete-branch`.
+  `--no-pr` opts out; push, PR, or merge failures warn and
   continue, never block the status flip.
 - **Mission Control, in your browser.** `flow ui serve` boots a
   local web UI at `127.0.0.1:8787` that browses every task,
@@ -272,15 +273,18 @@ By default `flow do` ensures a per-task git worktree at
 forked from `origin/HEAD` (detected at task start). The agent
 session is launched inside that worktree, so multiple tasks
 against the same repo never collide. `tasks.worktree_path`
-remembers the path; `flow show task` surfaces it. `--no-worktree`
-spawns inside the task's raw `work_dir` instead.
+remembers the path; `flow show task` surfaces it. Worktree setup
+errors stop launch instead of falling back to the shared checkout.
 
 When you `flow done <task>`, flow snapshots the worktree's diff
 against its starting HEAD, runs the close-out sweep, then pushes
 the branch and runs `gh pr create --base <detected> --head
 flow/<slug>` with the task brief as the PR body. The PR URL is
-stored in `task_pr_links`. Pass `--no-pr` to skip; push or PR
-failures warn and keep going (the status flip is the contract).
+stored in `task_pr_links`. Pass `--merge` only after the user has
+approved shipping; it merges the opened or already-recorded PR and
+marks the stored PR link as merged. Pass `--no-pr` to skip; push,
+PR, or merge failures warn and keep going (the status flip is the
+contract).
 
 ### Focus instead of spawn for live sessions
 

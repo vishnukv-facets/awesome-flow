@@ -79,7 +79,7 @@ func TestCmdDoCreatesWorktreeForGitRepo(t *testing.T) {
 	}
 }
 
-func TestCmdDoNoWorktreeFlagSkipsWorktree(t *testing.T) {
+func TestCmdDoNoWorktreeFlagIsRejected(t *testing.T) {
 	setupFlowRoot(t)
 	stubITerm(t)
 	repo := initGitRepoForWorktreeTest(t)
@@ -87,20 +87,23 @@ func TestCmdDoNoWorktreeFlagSkipsWorktree(t *testing.T) {
 	if rc := cmdAdd([]string{"task", "Skip Worktree", "--work-dir", repo}); rc != 0 {
 		t.Fatalf("add rc=%d", rc)
 	}
-	if rc := cmdDo([]string{"skip-worktree", "--no-worktree"}); rc != 0 {
-		t.Fatalf("do rc=%d", rc)
+	if rc := cmdDo([]string{"skip-worktree", "--no-worktree"}); rc != 2 {
+		t.Fatalf("do rc=%d, want 2", rc)
 	}
 
 	if _, err := os.Stat(filepath.Join(repo, ".claude", "worktrees", "skip-worktree")); err == nil {
-		t.Error("worktree was created despite --no-worktree")
+		t.Error("worktree was created after rejected --no-worktree")
 	}
 	db := openFlowDB(t)
 	task, err := flowdb.GetTask(db, "skip-worktree")
 	if err != nil {
 		t.Fatal(err)
 	}
+	if task.Status != "backlog" || task.SessionID.Valid {
+		t.Fatalf("rejected --no-worktree should not start task: %+v", task)
+	}
 	if task.WorktreePath.Valid && task.WorktreePath.String != "" {
-		t.Errorf("worktree_path was set to %q with --no-worktree; want unset", task.WorktreePath.String)
+		t.Errorf("worktree_path was set to %q after rejected --no-worktree; want unset", task.WorktreePath.String)
 	}
 }
 
@@ -254,6 +257,49 @@ func TestRaiseDonePRForTask_NoWorktreeIsNoop(t *testing.T) {
 	}
 	if prURL != "" {
 		t.Errorf("prURL = %q, want empty for task without worktree", prURL)
+	}
+}
+
+func TestMergeDonePRForTaskMergesAndMarksLink(t *testing.T) {
+	setupFlowRoot(t)
+	db := openFlowDB(t)
+	if rc := cmdAdd([]string{"task", "Merge It", "--slug", "merge-it"}); rc != 0 {
+		t.Fatalf("add rc=%d", rc)
+	}
+	prURL := "https://github.com/acme/widgets/pull/77"
+	if err := flowdb.UpsertTaskPRLink(db, "merge-it", "acme/widgets", 77, prURL); err != nil {
+		t.Fatal(err)
+	}
+	wt := t.TempDir()
+	task := &flowdb.Task{Slug: "merge-it", Name: "Merge It", WorktreePath: nullString(wt)}
+
+	mergeCalled := false
+	oldGh := ghCmdRunner
+	ghCmdRunner = func(cwd string, args ...string) (string, error) {
+		mergeCalled = true
+		if cwd != wt {
+			t.Errorf("cwd = %q, want %q", cwd, wt)
+		}
+		want := []string{"pr", "merge", prURL, "--merge", "--delete-branch"}
+		if strings.Join(args, "\x00") != strings.Join(want, "\x00") {
+			t.Errorf("gh args = %#v, want %#v", args, want)
+		}
+		return "", nil
+	}
+	t.Cleanup(func() { ghCmdRunner = oldGh })
+
+	if err := mergeDonePRForTask(db, task, prURL); err != nil {
+		t.Fatalf("mergeDonePRForTask: %v", err)
+	}
+	if !mergeCalled {
+		t.Fatal("gh pr merge was not invoked")
+	}
+	links, err := flowdb.ListTaskPRLinks(db, "merge-it")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(links) != 1 || links[0].State != "merged" || !links[0].MergedAt.Valid {
+		t.Fatalf("links after merge = %+v", links)
 	}
 }
 

@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"flow/internal/flowdb"
 	"flow/internal/iterm"
 	"fmt"
@@ -663,6 +664,35 @@ func TestPrepareTerminalLaunchAllocatesBrowserSession(t *testing.T) {
 	}
 }
 
+func TestPrepareTerminalLaunchUsesTaskWorktree(t *testing.T) {
+	root, db := testRootDB(t)
+	insertProjectTask(t, db, root)
+	repo := initGitRepoForServerTest(t)
+	if _, err := db.Exec(`UPDATE tasks SET work_dir = ? WHERE slug = 'build-ui'`, repo); err != nil {
+		t.Fatal(err)
+	}
+
+	srv := New(Config{DB: db, FlowRoot: root, CommandPath: "/bin/false"})
+	launch, err := srv.prepareTerminalLaunch("build-ui")
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantWT := filepath.Join(repo, ".claude", "worktrees", "build-ui")
+	if launch.WorkDir != wantWT {
+		t.Fatalf("launch workdir = %q, want %q", launch.WorkDir, wantWT)
+	}
+	if _, err := os.Stat(wantWT); err != nil {
+		t.Fatalf("worktree dir missing: %v", err)
+	}
+	task, err := flowdb.GetTask(db, "build-ui")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !task.WorktreePath.Valid || task.WorktreePath.String != wantWT {
+		t.Fatalf("worktree_path = %#v, want %q", task.WorktreePath, wantWT)
+	}
+}
+
 func TestPrepareTerminalLaunchRefusesBlockedTask(t *testing.T) {
 	root, db := testRootDB(t)
 	insertProjectTask(t, db, root)
@@ -713,6 +743,111 @@ func TestSpawnActionRefusesBlockedTaskBeforeProviderChoice(t *testing.T) {
 	}
 	if task.SessionProvider == "codex" || task.Status != "backlog" || task.SessionID.Valid {
 		t.Fatalf("blocked spawn should not mutate provider/session: %+v", task)
+	}
+}
+
+func TestWorkdirActionsAddRenameRemove(t *testing.T) {
+	root, db := testRootDB(t)
+	workDir := t.TempDir()
+	srv := New(Config{DB: db, FlowRoot: root, CommandPath: "/bin/false"})
+
+	resp, status := srv.runAction(actionRequest{
+		Kind:        "workdir-add",
+		Path:        workDir,
+		Name:        "Main repo",
+		Description: "Primary development checkout",
+	})
+	if status != http.StatusOK || !resp.OK {
+		t.Fatalf("add status = %d, resp = %+v", status, resp)
+	}
+	abs, err := filepath.Abs(workDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wd, err := flowdb.GetWorkdir(db, abs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if wd.Name.String != "Main repo" || wd.Description.String != "Primary development checkout" {
+		t.Fatalf("workdir after add = %+v", wd)
+	}
+
+	resp, status = srv.runAction(actionRequest{
+		Kind:        "workdir-rename",
+		Path:        workDir,
+		Name:        "Renamed repo",
+		Description: "Renamed description",
+	})
+	if status != http.StatusOK || !resp.OK {
+		t.Fatalf("rename status = %d, resp = %+v", status, resp)
+	}
+	wd, err = flowdb.GetWorkdir(db, abs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if wd.Name.String != "Renamed repo" || wd.Description.String != "Renamed description" {
+		t.Fatalf("workdir after rename = %+v", wd)
+	}
+
+	resp, status = srv.runAction(actionRequest{Kind: "workdir-remove", Path: workDir})
+	if status != http.StatusOK || !resp.OK {
+		t.Fatalf("remove status = %d, resp = %+v", status, resp)
+	}
+	if _, err := flowdb.GetWorkdir(db, abs); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("workdir after remove err = %v, want sql.ErrNoRows", err)
+	}
+}
+
+func TestDestroyOnlyDeletesTrashItems(t *testing.T) {
+	root, db := testRootDB(t)
+	insertProjectTask(t, db, root)
+	srv := New(Config{DB: db, FlowRoot: root, CommandPath: "/bin/false"})
+
+	resp, status := srv.runAction(actionRequest{Kind: "destroy", EntityKind: "task", Slug: "build-ui"})
+	if status != http.StatusConflict || resp.OK || !strings.Contains(resp.Message, "must be in trash") {
+		t.Fatalf("active destroy status = %d, resp = %+v", status, resp)
+	}
+
+	now := flowdb.NowISO()
+	if _, err := db.Exec(`UPDATE tasks SET deleted_at = ? WHERE slug = 'build-ui'`, now); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(
+		`INSERT INTO search_docs
+			(doc_key, scope, entity_type, entity_slug, title, source_path, source_mtime, content, updated_at)
+		 VALUES
+			('task/build-ui/brief', 'brief', 'task', 'build-ui', 'Build dashboard UI', '/tmp/brief.md', ?, 'body', ?)`,
+		now, now,
+	); err != nil {
+		t.Fatal(err)
+	}
+	resp, status = srv.runAction(actionRequest{Kind: "destroy", EntityKind: "task", Slug: "build-ui"})
+	if status != http.StatusOK || !resp.OK {
+		t.Fatalf("trash destroy status = %d, resp = %+v", status, resp)
+	}
+	if _, err := flowdb.GetTask(db, "build-ui"); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("task after destroy err = %v, want sql.ErrNoRows", err)
+	}
+	var docs int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM search_docs WHERE entity_type = 'task' AND entity_slug = 'build-ui'`).Scan(&docs); err != nil {
+		t.Fatal(err)
+	}
+	if docs != 0 {
+		t.Fatalf("search docs after destroy = %d, want 0", docs)
+	}
+}
+
+func TestDestroyProjectWithRefsIsBlocked(t *testing.T) {
+	root, db := testRootDB(t)
+	insertProjectTask(t, db, root)
+	if _, err := db.Exec(`UPDATE projects SET deleted_at = ? WHERE slug = 'flow'`, flowdb.NowISO()); err != nil {
+		t.Fatal(err)
+	}
+	srv := New(Config{DB: db, FlowRoot: root, CommandPath: "/bin/false"})
+
+	resp, status := srv.runAction(actionRequest{Kind: "destroy", EntityKind: "project", Slug: "flow"})
+	if status != http.StatusConflict || resp.OK || !strings.Contains(resp.Message, "still has") {
+		t.Fatalf("status = %d, resp = %+v", status, resp)
 	}
 }
 
@@ -2213,6 +2348,21 @@ func runGitTest(t *testing.T, dir string, args ...string) {
 	if err != nil {
 		t.Fatalf("git %s: %v\n%s", strings.Join(args, " "), err, string(out))
 	}
+}
+
+func initGitRepoForServerTest(t *testing.T) string {
+	t.Helper()
+	repo := t.TempDir()
+	runGitTest(t, repo, "init", "-b", "main")
+	if err := os.WriteFile(filepath.Join(repo, "README.md"), []byte("# t\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGitTest(t, repo, "add", "README.md")
+	runGitTest(t, repo, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-m", "init")
+	if canon, err := exec.Command("git", "-C", repo, "rev-parse", "--show-toplevel").Output(); err == nil {
+		return strings.TrimSpace(string(canon))
+	}
+	return repo
 }
 
 func containsString(items []string, want string) bool {

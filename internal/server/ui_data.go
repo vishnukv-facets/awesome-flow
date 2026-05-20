@@ -1302,9 +1302,6 @@ func (s *Server) uiWorkdirs() ([]uiWorkdir, error) {
 	out := make([]uiWorkdir, 0, len(views))
 	for _, w := range views {
 		name := filepath.Base(w.Path)
-		if w.Name != nil && *w.Name != "" {
-			name = *w.Name
-		}
 		usedMin := 0
 		if w.LastUsedAt != nil {
 			usedMin = minutesSince(*w.LastUsedAt)

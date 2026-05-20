@@ -55,7 +55,12 @@ func cmdDone(args []string) int {
 	query := args[0]
 	fs := flagSet("done")
 	noPR := fs.Bool("no-pr", false, "skip the post-done PR push and gh pr create attempt")
+	mergePR := fs.Bool("merge", false, "after opening or finding the task PR, merge it with gh pr merge --merge --delete-branch")
 	if err := fs.Parse(args[1:]); err != nil {
+		return 2
+	}
+	if *noPR && *mergePR {
+		fmt.Fprintln(os.Stderr, "error: --merge cannot be combined with --no-pr")
 		return 2
 	}
 
@@ -139,10 +144,23 @@ func cmdDone(args []string) int {
 	}
 
 	if !*noPR {
+		prURL := ""
 		if prURL, err := raiseDonePRForTask(db, task); err != nil {
 			fmt.Fprintf(os.Stderr, "warning: PR creation failed: %v\n", err)
 		} else if prURL != "" {
 			fmt.Printf("Opened PR %s\n", prURL)
+		}
+		if *mergePR {
+			if prURL == "" {
+				prURL = openPRURLForTask(db, task.Slug)
+			}
+			if prURL == "" {
+				fmt.Fprintln(os.Stderr, "warning: merge requested but no open PR URL was available")
+			} else if err := mergeDonePRForTask(db, task, prURL); err != nil {
+				fmt.Fprintf(os.Stderr, "warning: PR merge failed: %v\n", err)
+			} else {
+				fmt.Printf("Merged PR %s\n", prURL)
+			}
 		}
 	}
 

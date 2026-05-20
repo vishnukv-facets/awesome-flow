@@ -1946,6 +1946,8 @@ const App = () => {
       target: target.slug,
       slug: target.slug,
       name: target.name,
+      path: target.path,
+      description: target.description,
       project: target.project,
       work_dir: target.workdir || target.work_dir,
       priority: target.priority,
@@ -2027,31 +2029,54 @@ const App = () => {
     }
     if (kind === 'switch-branch') { setToast(`switching ${target.slug} to ${target.branch}…`); return serverAction(kind, target).catch(err => { setToast(err.message); return null; }); }
     if (kind === 'restart') { return openBridge('restart', target); }
-    if (kind === 'archive') { setToast(`archiving ${target.slug}…`); serverAction('archive', target).catch(err => setToast(err.message)); return; }
+    if (kind === 'archive') { setToast(`archiving ${target.slug}…`); serverAction('archive', target).then(refreshUIData).catch(err => setToast(err.message)); return; }
     if (kind === 'delete') {
       const slug = (target && (target.slug || target.name)) || '';
       const entity = (target && target.kind) || 'task';
       if (!slug) {
-        setToast(`deleting…`);
+        setToast(`archiving…`);
         serverAction('delete', target).then(refreshUIData).catch(err => setToast(err.message));
         return;
       }
       setConfirm({
-        title: <>Delete {entity} <span className="mono" style={{color: 'var(--text)'}}>{slug}</span></>,
+        title: <>Archive {entity} <span className="mono" style={{color: 'var(--text)'}}>{slug}</span></>,
         body: (
           <>
             This will move <span className="mono" style={{color: 'var(--text)'}}>{slug}</span>
             {target.name && target.name !== slug ? <> (<span>{target.name}</span>)</> : null} to the trash.
-            <div style={{marginTop: 6, color: 'var(--text-dim)'}}>Related sessions, runs, and history may be affected.</div>
+            <div style={{marginTop: 6, color: 'var(--text-dim)'}}>You can restore it from Trash, or delete it permanently there.</div>
+          </>
+        ),
+        confirm: `Archive ${entity}`,
+        danger: false,
+        requireText: slug,
+        requireLabel: <>Type <code className="modal-confirm-token">{slug}</code> to confirm archive.</>,
+        onConfirm: () => {
+          setToast(`archiving ${slug}…`);
+          serverAction('delete', target).then(refreshUIData).catch(err => setToast(err.message));
+        },
+      });
+      return;
+    }
+    if (kind === 'destroy') {
+      const slug = (target && target.slug) || '';
+      const entity = (target && target.kind) || 'item';
+      if (!slug) return;
+      setConfirm({
+        title: <>Delete {entity} <span className="mono" style={{color: 'var(--text)'}}>{slug}</span></>,
+        body: (
+          <>
+            This permanently deletes <span className="mono" style={{color: 'var(--text)'}}>{slug}</span>.
+            <div style={{marginTop: 6, color: 'var(--text-dim)'}}>This is only available from Trash and cannot be undone.</div>
           </>
         ),
         confirm: `Delete ${entity}`,
         danger: true,
         requireText: slug,
-        requireLabel: <>Type <code className="modal-confirm-token">{slug}</code> to confirm deletion.</>,
+        requireLabel: <>Type <code className="modal-confirm-token">{slug}</code> to confirm permanent deletion.</>,
         onConfirm: () => {
           setToast(`deleting ${slug}…`);
-          serverAction('delete', target).then(refreshUIData).catch(err => setToast(err.message));
+          serverAction('destroy', target).then(refreshUIData).catch(err => setToast(err.message));
         },
       });
       return;
@@ -2059,6 +2084,31 @@ const App = () => {
     if (kind === 'restore') {
       setToast(`restoring ${target.slug}…`);
       serverAction('restore', target).then(refreshUIData).catch(err => setToast(err.message));
+      return;
+    }
+    if (kind === 'workdir-add' || kind === 'workdir-rename') {
+      setToast(kind === 'workdir-add' ? 'registering workdir…' : 'renaming workdir…');
+      serverAction(kind, target).then(refreshUIData).catch(err => setToast(err.message));
+      return;
+    }
+    if (kind === 'workdir-remove') {
+      const path = (target && target.path) || '';
+      if (!path) return;
+      setConfirm({
+        title: <>Remove workdir <span className="mono" style={{color: 'var(--text)'}}>{target.name || path}</span></>,
+        body: (
+          <>
+            This unregisters <span className="mono" style={{color: 'var(--text)'}}>{path}</span> from Flow.
+            <div style={{marginTop: 6, color: 'var(--text-dim)'}}>It does not delete files from disk.</div>
+          </>
+        ),
+        confirm: 'Remove workdir',
+        danger: true,
+        onConfirm: () => {
+          setToast('removing workdir…');
+          serverAction('workdir-remove', target).then(refreshUIData).catch(err => setToast(err.message));
+        },
+      });
       return;
     }
     if (kind === 'investigate') { openBridge('attach', target); return; }
@@ -2365,7 +2415,7 @@ const App = () => {
         {isProject && <ProjectDetail slug={projectSlug} goto={goto} action={action} onAddTask={openAddTaskForProject} refreshKey={dataTick}/>}
         {route === 'playbooks' && <PlaybooksList action={action} goto={goto}/>}
         {isPlaybook && <PlaybookDetail slug={playbookSlug} goto={goto} action={action}/>}
-        {route === 'workdirs' && <WorkdirsView/>}
+        {route === 'workdirs' && <WorkdirsView action={action}/>}
         {route === 'kb' && <KBView/>}
         {route === 'inbox' && <InboxView action={action} goto={goto}/>}
         {route === 'trash' && <TrashView action={action}/>}

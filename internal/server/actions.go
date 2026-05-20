@@ -12,6 +12,7 @@ import (
 	"flow/internal/spawner"
 	macterminal "flow/internal/terminal"
 	"flow/internal/warp"
+	"flow/internal/workdirreg"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -31,6 +32,8 @@ type actionRequest struct {
 	Target          string   `json:"target"`
 	Slug            string   `json:"slug"`
 	Name            string   `json:"name"`
+	Path            string   `json:"path"`
+	Description     string   `json:"description"`
 	Project         string   `json:"project"`
 	WorkDir         string   `json:"work_dir"`
 	Priority        string   `json:"priority"`
@@ -140,6 +143,13 @@ func (s *Server) runAction(req actionRequest) (actionResponse, int) {
 			return actionResponse{OK: false, Message: err.Error(), Output: out}, http.StatusInternalServerError
 		}
 		return actionResponse{OK: true, Message: req.Kind + "d " + target, Output: out}, http.StatusOK
+	case "destroy":
+		if err := validateSlug(target); err != nil {
+			return actionResponse{OK: false, Message: err.Error()}, http.StatusBadRequest
+		}
+		return s.destroyDeletedEntity(req.EntityKind, target)
+	case "workdir-add", "workdir-rename", "workdir-remove":
+		return s.workdirAction(req)
 	case "spawn-run":
 		if err := validateSlug(target); err != nil {
 			return actionResponse{OK: false, Message: err.Error()}, http.StatusBadRequest
@@ -187,6 +197,135 @@ func qualifiedEntityRef(kind, slug string) (string, error) {
 	default:
 		return "", fmt.Errorf("invalid entity kind %q", kind)
 	}
+}
+
+func (s *Server) workdirAction(req actionRequest) (actionResponse, int) {
+	rawPath := strings.TrimSpace(firstNonEmpty(req.Path, req.WorkDir, req.Target))
+	if rawPath == "" {
+		return actionResponse{OK: false, Message: "workdir path is required"}, http.StatusBadRequest
+	}
+	abs, err := filepath.Abs(rawPath)
+	if err != nil {
+		return actionResponse{OK: false, Message: err.Error()}, http.StatusBadRequest
+	}
+	switch req.Kind {
+	case "workdir-add", "workdir-rename":
+		info, err := os.Stat(abs)
+		if err != nil {
+			return actionResponse{OK: false, Message: err.Error()}, http.StatusBadRequest
+		}
+		if !info.IsDir() {
+			return actionResponse{OK: false, Message: abs + " is not a directory"}, http.StatusBadRequest
+		}
+		name := strings.TrimSpace(req.Name)
+		description := strings.TrimSpace(req.Description)
+		if req.Kind == "workdir-add" && name == "" {
+			name = filepath.Base(abs)
+		}
+		if req.Kind == "workdir-rename" && name == "" {
+			return actionResponse{OK: false, Message: "workdir name is required"}, http.StatusBadRequest
+		}
+		if err := workdirreg.Register(s.cfg.DB, abs, name, description); err != nil {
+			return actionResponse{OK: false, Message: err.Error()}, http.StatusInternalServerError
+		}
+		verb := "registered"
+		if req.Kind == "workdir-rename" {
+			verb = "renamed"
+		}
+		return actionResponse{OK: true, Message: verb + " workdir " + abs}, http.StatusOK
+	case "workdir-remove":
+		if _, err := s.cfg.DB.Exec(`DELETE FROM workdirs WHERE path = ?`, abs); err != nil {
+			return actionResponse{OK: false, Message: err.Error()}, http.StatusInternalServerError
+		}
+		return actionResponse{OK: true, Message: "removed workdir " + abs}, http.StatusOK
+	default:
+		return actionResponse{OK: false, Message: "unknown workdir action " + req.Kind}, http.StatusBadRequest
+	}
+}
+
+func (s *Server) destroyDeletedEntity(kind, slug string) (actionResponse, int) {
+	table, err := entityTable(kind)
+	if err != nil {
+		return actionResponse{OK: false, Message: err.Error()}, http.StatusBadRequest
+	}
+	tx, err := s.cfg.DB.Begin()
+	if err != nil {
+		return actionResponse{OK: false, Message: err.Error()}, http.StatusInternalServerError
+	}
+	defer tx.Rollback()
+
+	var deletedAt sql.NullString
+	if err := tx.QueryRow(fmt.Sprintf(`SELECT deleted_at FROM %s WHERE slug = ?`, table), slug).Scan(&deletedAt); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return actionResponse{OK: false, Message: kind + " not found: " + slug}, http.StatusNotFound
+		}
+		return actionResponse{OK: false, Message: err.Error()}, http.StatusInternalServerError
+	}
+	if !deletedAt.Valid || strings.TrimSpace(deletedAt.String) == "" {
+		return actionResponse{OK: false, Message: kind + " must be in trash before it can be permanently deleted"}, http.StatusConflict
+	}
+	if msg, err := permanentDeleteBlocker(tx, kind, slug); err != nil {
+		return actionResponse{OK: false, Message: err.Error()}, http.StatusInternalServerError
+	} else if msg != "" {
+		return actionResponse{OK: false, Message: msg}, http.StatusConflict
+	}
+	if _, err := tx.Exec(`DELETE FROM search_docs WHERE entity_type = ? AND entity_slug = ?`, kind, slug); err != nil {
+		return actionResponse{OK: false, Message: err.Error()}, http.StatusInternalServerError
+	}
+	if _, err := tx.Exec(fmt.Sprintf(`DELETE FROM %s WHERE slug = ?`, table), slug); err != nil {
+		return actionResponse{OK: false, Message: err.Error()}, http.StatusInternalServerError
+	}
+	if err := tx.Commit(); err != nil {
+		return actionResponse{OK: false, Message: err.Error()}, http.StatusInternalServerError
+	}
+	return actionResponse{OK: true, Message: "deleted " + kind + " " + slug}, http.StatusOK
+}
+
+func entityTable(kind string) (string, error) {
+	switch strings.TrimSpace(kind) {
+	case "task":
+		return "tasks", nil
+	case "project":
+		return "projects", nil
+	case "playbook":
+		return "playbooks", nil
+	default:
+		return "", fmt.Errorf("invalid entity kind %q", kind)
+	}
+}
+
+func permanentDeleteBlocker(tx *sql.Tx, kind, slug string) (string, error) {
+	var count int
+	switch kind {
+	case "task":
+		if err := tx.QueryRow(`SELECT COUNT(*) FROM tasks WHERE parent_slug = ?`, slug).Scan(&count); err != nil {
+			return "", err
+		}
+		if count > 0 {
+			return fmt.Sprintf("task %s still has %d child task(s); delete or detach them first", slug, count), nil
+		}
+	case "project":
+		if err := tx.QueryRow(`SELECT COUNT(*) FROM tasks WHERE project_slug = ?`, slug).Scan(&count); err != nil {
+			return "", err
+		}
+		if count > 0 {
+			return fmt.Sprintf("project %s still has %d task(s); delete or move them first", slug, count), nil
+		}
+		if err := tx.QueryRow(`SELECT COUNT(*) FROM playbooks WHERE project_slug = ?`, slug).Scan(&count); err != nil {
+			return "", err
+		}
+		if count > 0 {
+			return fmt.Sprintf("project %s still has %d playbook(s); delete or move them first", slug, count), nil
+		}
+	case "playbook":
+		if err := tx.QueryRow(`SELECT COUNT(*) FROM tasks WHERE playbook_slug = ?`, slug).Scan(&count); err != nil {
+			return "", err
+		}
+		if count > 0 {
+			return fmt.Sprintf("playbook %s still has %d run task(s); delete them first", slug, count), nil
+		}
+	}
+	return "", nil
 }
 
 func (s *Server) createFlow(req actionRequest) (actionResponse, int) {
