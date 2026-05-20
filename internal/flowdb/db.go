@@ -676,25 +676,33 @@ func OpenDB(path string) (*sql.DB, error) {
 func runMigrations(db *sql.DB) error {
 	// Wipe legacy inbox/monitor/slack/github tables on boot. The feature
 	// was removed; any existing user install still has data sitting in
-	// these tables that the current code no longer touches. Dropping them
-	// on first boot of the post-removal binary frees the DB pages and
-	// removes the dangling FK targets cleanly.
+	// these tables that the current code no longer touches. Foreign keys
+	// are toggled off for the duration so child-table drops don't trip
+	// parent-table constraints — several of these tables FK back to
+	// monitor_events / external_messages which are in the same drop set.
+	if _, err := db.Exec(`PRAGMA foreign_keys = OFF`); err != nil {
+		return fmt.Errorf("disable foreign_keys for legacy drop: %w", err)
+	}
 	for _, t := range []string{
-		"monitor_events",
+		"external_message_actions",
+		"external_messages",
+		"monitor_event_actions",
 		"monitor_notifications",
 		"monitor_notification_states",
-		"monitor_event_actions",
 		"monitor_sync_state",
 		"monitor_fetch_state",
+		"monitor_events",
 		"automation_rules",
-		"external_messages",
-		"external_message_actions",
 		"task_pr_links",
 		"slack_oauth_tokens",
 	} {
 		if _, err := db.Exec("DROP TABLE IF EXISTS " + t); err != nil {
+			_, _ = db.Exec(`PRAGMA foreign_keys = ON`)
 			return fmt.Errorf("drop legacy %s: %w", t, err)
 		}
+	}
+	if _, err := db.Exec(`PRAGMA foreign_keys = ON`); err != nil {
+		return fmt.Errorf("re-enable foreign_keys after legacy drop: %w", err)
 	}
 
 	has, err := columnExists(db, "workdirs", "description")
