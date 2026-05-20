@@ -2,8 +2,6 @@ package server
 
 import (
 	"database/sql"
-	"sync"
-	"time"
 )
 
 type Config struct {
@@ -12,18 +10,6 @@ type Config struct {
 	Version     string
 	CommandPath string
 	HookURL     string
-	// MonitorPollInterval controls the background poller's cadence.
-	//
-	//	< 0  → not set on the CLI; newMonitorPoller falls back to
-	//	       FLOW_MONITOR_POLL_INTERVAL env, then defaultMonitorInterval (60s)
-	//	== 0 → explicitly disable the background poller (operator opt-out)
-	//	 > 0 → poll at this cadence
-	//
-	// Pass via `flow ui serve --monitor-interval <dur>`. The "< 0" sentinel
-	// is how `flow ui serve` distinguishes "user didn't pass the flag" from
-	// "user passed --monitor-interval 0 to disable" — Go's flag package
-	// can't distinguish those for a Duration default of 0.
-	MonitorPollInterval time.Duration
 }
 
 type Server struct {
@@ -31,18 +17,8 @@ type Server struct {
 	terminals   *terminalHub
 	events      *eventHub
 	reconcile   *livenessReconciler
-	monitor     *monitorPoller
-	slackSocket *slackSocketListener
 	transcripts *transcriptCache
 	caches      *uiCaches
-	// agentSlackDebounce dedups "agent needs input" DMs so a flapping
-	// session (waiting → idle → waiting in seconds) doesn't spam the
-	// originating Slack thread. Keyed by "<provider>:<session_id>";
-	// values are the timestamp of the last DM. See agent_hooks.go.
-	agentSlackDebounce struct {
-		mu     sync.Mutex
-		lastAt map[string]time.Time
-	}
 }
 
 type HealthView struct {

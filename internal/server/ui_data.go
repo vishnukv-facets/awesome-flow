@@ -18,7 +18,6 @@ import (
 
 	"flow/internal/agents"
 	"flow/internal/flowdb"
-	flowmonitor "flow/internal/monitor"
 )
 
 type uiData struct {
@@ -33,7 +32,6 @@ type uiData struct {
 	Projects         []uiProject     `json:"PROJECTS_MC"`
 	ActivityHeatmap  []uiActivityDay `json:"ACTIVITY_HEATMAP"`
 	Capabilities     uiCapabilities  `json:"CAPABILITIES"`
-	Monitor          uiMonitor       `json:"MONITOR"`
 	Trash            uiTrash         `json:"TRASH"`
 	SampleTranscript []uiTranscript  `json:"SAMPLE_TRANSCRIPT"`
 	SampleDiffFiles  []uiDiffFile    `json:"SAMPLE_DIFF_FILES"`
@@ -43,74 +41,6 @@ type uiActivityDay struct {
 	Date  string   `json:"date"`
 	Count int      `json:"count"`
 	Tasks []string `json:"tasks,omitempty"`
-}
-
-type uiMonitor struct {
-	Notifications []uiMonitorNotification `json:"notifications"`
-	Events        []uiMonitorEvent        `json:"events"`
-	Rules         []uiAutomationRule      `json:"rules"`
-	Sources       []uiMonitorSource       `json:"sources"`
-	Unread        int                     `json:"unread"`
-	Approvals     int                     `json:"approvals"`
-	LastSync      string                  `json:"last_sync"`
-}
-
-type uiMonitorNotification struct {
-	ID        string            `json:"id"`
-	EventID   string            `json:"event_id"`
-	Title     string            `json:"title"`
-	Body      string            `json:"body,omitempty"`
-	Level     string            `json:"level"`
-	Status    string            `json:"status"`
-	CreatedAt string            `json:"created_at"`
-	Source    string            `json:"source,omitempty"`
-	Kind      string            `json:"kind,omitempty"`
-	URL       string            `json:"url,omitempty"`
-	Mode      string            `json:"mode,omitempty"`
-	Outcome   *uiMonitorOutcome `json:"outcome,omitempty"`
-}
-
-type uiMonitorEvent struct {
-	ID          string            `json:"id"`
-	Source      string            `json:"source"`
-	Kind        string            `json:"kind"`
-	SourceID    string            `json:"source_id"`
-	Title       string            `json:"title"`
-	Body        string            `json:"body,omitempty"`
-	URL         string            `json:"url,omitempty"`
-	Severity    string            `json:"severity"`
-	Status      string            `json:"status"`
-	FirstSeenAt string            `json:"first_seen_at"`
-	LastSeenAt  string            `json:"last_seen_at"`
-	Mode        string            `json:"mode,omitempty"`
-	Outcome     *uiMonitorOutcome `json:"outcome,omitempty"`
-}
-
-type uiMonitorOutcome struct {
-	Action    string `json:"action"`
-	TaskSlug  string `json:"task_slug,omitempty"`
-	Note      string `json:"note,omitempty"`
-	CreatedAt string `json:"created_at,omitempty"`
-}
-
-type uiAutomationRule struct {
-	ID             string `json:"id"`
-	Source         string `json:"source"`
-	Kind           string `json:"kind"`
-	Mode           string `json:"mode"`
-	PromptTemplate string `json:"prompt_template,omitempty"`
-	ProjectSlug    string `json:"project_slug,omitempty"`
-	WorkDir        string `json:"work_dir,omitempty"`
-	Provider       string `json:"provider,omitempty"`
-	ReadOnly       bool   `json:"read_only"`
-}
-
-type uiMonitorSource struct {
-	ID       string `json:"id"`
-	Label    string `json:"label"`
-	Status   string `json:"status"`
-	LastSync string `json:"last_sync,omitempty"`
-	Message  string `json:"message,omitempty"`
 }
 
 type uiTrash struct {
@@ -166,7 +96,6 @@ type uiAgent struct {
 	Transcript      []uiTranscript `json:"transcript,omitempty"`
 	Brief           string         `json:"brief,omitempty"`
 	RecentTools     []uiRecentTool `json:"recent_tools,omitempty"`
-	PRLinks         []uiPRLink     `json:"pr_links,omitempty"`
 	DiffFiles       []uiDiffFile   `json:"diff_files,omitempty"`
 	BriefPath       string         `json:"brief_path,omitempty"`
 	Updates         []FileRef      `json:"updates,omitempty"`
@@ -213,14 +142,6 @@ type uiDiffLine struct {
 type uiRecentTool struct {
 	Name string `json:"name"`
 	S    string `json:"s"`
-}
-
-type uiPRLink struct {
-	Repo     string `json:"repo"`
-	Number   int    `json:"number"`
-	URL      string `json:"url"`
-	State    string `json:"state"`
-	MergedAt string `json:"merged_at,omitempty"`
 }
 
 type uiTerminal struct {
@@ -440,7 +361,6 @@ func (s *Server) buildUIData() (uiData, error) {
 		Projects:         projects,
 		ActivityHeatmap:  buildActivityHeatmap(taskViews, time.Now()),
 		Capabilities:     detectCapabilities(),
-		Monitor:          s.uiMonitor(agents),
 		Trash:            s.uiTrash(),
 		SampleTranscript: transcript,
 		SampleDiffFiles:  diffFiles,
@@ -492,267 +412,6 @@ func (s *Server) uiTrash() uiTrash {
 	return out
 }
 
-func (s *Server) uiMonitor(agents []uiAgent) uiMonitor {
-	_ = flowdb.EnsureDefaultAutomationRules(s.cfg.DB)
-	rules, _ := flowdb.ListAutomationRules(s.cfg.DB)
-	events, _ := flowdb.ListMonitorEvents(s.cfg.DB, 50)
-	notifications, _ := flowdb.ListMonitorNotifications(s.cfg.DB, 50)
-	eventIDs := map[string]bool{}
-	for _, event := range events {
-		eventIDs[event.ID] = true
-	}
-	for _, notification := range notifications {
-		if strings.TrimSpace(notification.EventID) == "" || eventIDs[notification.EventID] {
-			continue
-		}
-		event, err := flowdb.GetMonitorEvent(s.cfg.DB, notification.EventID)
-		if err != nil {
-			if errors.Is(err, sql.ErrNoRows) {
-				continue
-			}
-			continue
-		}
-		events = append(events, *event)
-		eventIDs[event.ID] = true
-	}
-	actionEventIDs := make([]string, 0, len(events)+len(notifications))
-	for _, event := range events {
-		actionEventIDs = append(actionEventIDs, event.ID)
-	}
-	for _, notification := range notifications {
-		actionEventIDs = append(actionEventIDs, notification.EventID)
-	}
-	actionByEventID, _ := flowdb.MonitorEventActionMap(s.cfg.DB, actionEventIDs)
-	ruleModes := map[string]string{}
-	uiRules := make([]uiAutomationRule, 0, len(rules))
-	for _, rule := range rules {
-		ruleModes[rule.Source+"."+rule.Kind] = rule.Mode
-		uiRules = append(uiRules, uiAutomationRule{
-			ID:             rule.ID,
-			Source:         rule.Source,
-			Kind:           rule.Kind,
-			Mode:           rule.Mode,
-			PromptTemplate: nullStringValue(rule.PromptTemplate),
-			ProjectSlug:    nullStringValue(rule.ProjectSlug),
-			WorkDir:        nullStringValue(rule.WorkDir),
-			Provider:       nullStringValue(rule.Provider),
-			ReadOnly:       rule.ReadOnly,
-		})
-	}
-	eventByID := map[string]flowdb.MonitorEvent{}
-	hookAttentionURLs := map[string]bool{}
-	uiEvents := make([]uiMonitorEvent, 0, len(events))
-	lastSync := ""
-	for _, event := range events {
-		eventByID[event.ID] = event
-		if event.Source == agentHookMonitorSource && (event.Status == "new" || event.Status == "notified") && agentHookAttentionKind(event.Kind) {
-			if url := nullStringValue(event.URL); url != "" {
-				hookAttentionURLs[url] = true
-			}
-		}
-		if event.LastSeenAt > lastSync {
-			lastSync = event.LastSeenAt
-		}
-		mode := ruleModes[event.Source+"."+event.Kind]
-		action, hasAction := actionByEventID[event.ID]
-		uiEvents = append(uiEvents, uiMonitorEvent{
-			ID:          event.ID,
-			Source:      event.Source,
-			Kind:        event.Kind,
-			SourceID:    event.SourceID,
-			Title:       event.Title,
-			Body:        nullStringValue(event.Body),
-			URL:         nullStringValue(event.URL),
-			Severity:    event.Severity,
-			Status:      event.Status,
-			FirstSeenAt: event.FirstSeenAt,
-			LastSeenAt:  event.LastSeenAt,
-			Mode:        mode,
-			Outcome:     uiMonitorOutcomeFor(action, hasAction),
-		})
-	}
-	agentNotifications := agentAttentionNotifications(agents)
-	agentNotificationIDs := make([]string, 0, len(agentNotifications))
-	for _, notification := range agentNotifications {
-		agentNotificationIDs = append(agentNotificationIDs, notification.ID)
-	}
-	agentNotificationStates, _ := flowdb.NotificationStateMap(s.cfg.DB, agentNotificationIDs)
-	uiNotifications := make([]uiMonitorNotification, 0, len(notifications)+len(agentNotifications))
-	agentByURL, agentByProviderSession := monitorAgentLookup(agents)
-	unread := 0
-	approvals := 0
-	for _, notification := range agentNotifications {
-		if notification.Level == "approval" && hookAttentionURLs[notification.URL] {
-			continue
-		}
-		if state := agentNotificationStates[notification.ID]; state != "" {
-			if state == "dismissed" {
-				continue
-			}
-			notification.Status = state
-		}
-		if notification.Status == "unread" {
-			unread++
-		}
-		if notification.Level == "approval" && notification.Status == "unread" {
-			approvals++
-		}
-		uiNotifications = append(uiNotifications, notification)
-	}
-	for _, notification := range notifications {
-		event := eventByID[notification.EventID]
-		if staleAgentLifecycleNotification(event, agentByURL, agentByProviderSession) {
-			continue
-		}
-		if notification.Status == "unread" {
-			unread++
-		}
-		if notification.Level == "approval" && notification.Status == "unread" {
-			approvals++
-		}
-		uiNotifications = append(uiNotifications, uiMonitorNotification{
-			ID:        notification.ID,
-			EventID:   notification.EventID,
-			Title:     notification.Title,
-			Body:      nullStringValue(notification.Body),
-			Level:     notification.Level,
-			Status:    notification.Status,
-			CreatedAt: notification.CreatedAt,
-			Source:    event.Source,
-			Kind:      event.Kind,
-			URL:       nullStringValue(event.URL),
-			Mode:      ruleModes[event.Source+"."+event.Kind],
-			Outcome:   uiMonitorOutcomeFor(actionByEventID[notification.EventID], actionByEventID[notification.EventID].Action != ""),
-		})
-	}
-	return uiMonitor{
-		Notifications: uiNotifications,
-		Events:        uiEvents,
-		Rules:         uiRules,
-		Sources: []uiMonitorSource{
-			{ID: "agents", Label: "Claude/Codex sessions", Status: "live", LastSync: "realtime", Message: "watching active agent sessions"},
-			{ID: "github", Label: "gh CLI", Status: "configured", LastSync: lastSeenForSource(events, "github")},
-			{ID: "slack", Label: "Slack events", Status: slackMonitorStatus(), LastSync: lastSeenForSource(events, "slack"), Message: slackMonitorMessage()},
-		},
-		Unread:    unread,
-		Approvals: approvals,
-		LastSync:  lastSync,
-	}
-}
-
-func uiMonitorOutcomeFor(action flowdb.MonitorEventAction, ok bool) *uiMonitorOutcome {
-	if !ok || strings.TrimSpace(action.Action) == "" {
-		return nil
-	}
-	out := &uiMonitorOutcome{
-		Action:    action.Action,
-		Note:      nullStringValue(action.Note),
-		CreatedAt: action.CreatedAt,
-	}
-	if action.TaskSlug.Valid {
-		out.TaskSlug = action.TaskSlug.String
-	}
-	return out
-}
-
-func agentAttentionNotifications(agents []uiAgent) []uiMonitorNotification {
-	out := []uiMonitorNotification{}
-	for _, agent := range agents {
-		if agent.Status == "waiting" && agent.WaitingFor != nil && (agent.WaitingFor.Kind == "question" || agent.WaitingFor.Kind == "permission" || agent.WaitingFor.Kind == "agent") {
-			title := agent.Name + " needs your answer"
-			if agent.WaitingFor.Kind == "permission" {
-				title = agent.Name + " needs permission"
-			}
-			out = append(out, uiMonitorNotification{
-				ID:      "agent-" + agent.Slug + "-" + agent.WaitingFor.Kind,
-				EventID: agent.Slug,
-				Title:   title,
-				Body:    agent.WaitingFor.Why,
-				Level:   "approval",
-				Status:  "unread",
-				Source:  "agent",
-				Kind:    agent.Provider + " " + agent.WaitingFor.Kind,
-				URL:     "/session/" + agent.Slug,
-				Mode:    "realtime",
-			})
-			continue
-		}
-	}
-	return out
-}
-
-func monitorAgentLookup(agents []uiAgent) (map[string]uiAgent, map[string]uiAgent) {
-	byURL := map[string]uiAgent{}
-	byProviderSession := map[string]uiAgent{}
-	for _, agent := range agents {
-		if strings.TrimSpace(agent.Slug) != "" {
-			byURL["/session/"+agent.Slug] = agent
-		}
-		if strings.TrimSpace(agent.Provider) != "" && strings.TrimSpace(agent.SessionID) != "" {
-			byProviderSession[agent.Provider+":"+agent.SessionID] = agent
-		}
-	}
-	return byURL, byProviderSession
-}
-
-func staleAgentLifecycleNotification(event flowdb.MonitorEvent, byURL, byProviderSession map[string]uiAgent) bool {
-	if event.Source != agentHookMonitorSource || !agentHookLifecycleKind(event.Kind) {
-		return false
-	}
-	agent, ok := byURL[nullStringValue(event.URL)]
-	if !ok {
-		parts := strings.Split(event.SourceID, ":")
-		if len(parts) >= 2 {
-			agent, ok = byProviderSession[parts[0]+":"+parts[1]]
-		}
-	}
-	if !ok {
-		return false
-	}
-	switch event.Kind {
-	case "stop", "stop_failure", "session_end", "task_completed":
-		return agent.Status == "running" || agent.Status == "waiting"
-	case "session_start", "subagent_start", "subagent_stop", "task_created":
-		return agent.Status == "idle" || agent.Status == "dead"
-	default:
-		return false
-	}
-}
-
-func shortSessionID(id string) string {
-	id = strings.TrimSpace(id)
-	if len(id) <= 8 {
-		return id
-	}
-	return id[:8]
-}
-
-func agentSessionLabel(provider, id string) string {
-	if strings.TrimSpace(id) == "" {
-		return provider + " session pending capture"
-	}
-	return provider + " session " + shortSessionID(id)
-}
-
-func slackMonitorStatus() string {
-	if flowmonitor.SlackSocketModeEnabled() && flowmonitor.SlackAppToken() != "" && flowmonitor.SlackBotToken() != "" {
-		return "socket mode"
-	}
-	if flowmonitor.SlackSocketModeEnabled() {
-		return "needs socket tokens"
-	}
-	return "disabled"
-}
-
-func slackMonitorMessage() string {
-	if flowmonitor.SlackSocketModeEnabled() && flowmonitor.SlackAppToken() != "" && flowmonitor.SlackBotToken() != "" {
-		return "listening with Slack Socket Mode; no conversations.history polling"
-	}
-	if flowmonitor.SlackSocketModeEnabled() {
-		return "set SLACK_APP_TOKEN and SLACK_BOT_TOKEN for Slack Socket Mode"
-	}
-	return "set FLOW_SLACK_SOCKET_MODE=1, SLACK_APP_TOKEN, and SLACK_BOT_TOKEN to enable Slack events"
-}
 
 func (s *Server) uiAgent(tv TaskView, live map[string]bool) uiAgent {
 	workDir := tv.WorkDir
@@ -839,7 +498,7 @@ func (s *Server) uiAgent(tv TaskView, live map[string]bool) uiAgent {
 		status = "idle"
 		runtimeSource = "task"
 	}
-	hookWaiting := s.agentHookWaitingFor(tv)
+	var hookWaiting *uiWaitingFor
 	transcriptWaiting := s.codexTranscriptWaitingFor(tv, provider)
 	if !staleOverviewSession && tv.Status == "in-progress" {
 		if hookRuntime != nil && hookRuntime.Status != "" {
@@ -948,7 +607,6 @@ func (s *Server) uiAgent(tv TaskView, live map[string]bool) uiAgent {
 		Transcript:      transcript,
 		Brief:           readMarkdownSummary(tv.BriefPath),
 		RecentTools:     recentTools(transcript),
-		PRLinks:         s.uiPRLinks(tv.Slug),
 		BriefPath:       tv.BriefPath,
 		Updates:         tv.Updates,
 		AuxFiles:        tv.AuxFiles,
@@ -985,53 +643,13 @@ func (s *Server) codexTranscriptWaitingFor(tv TaskView, provider string) *uiWait
 	}
 	pending := entry.pending
 	if pending == nil {
-		s.clearCodexTranscriptAttention(provider, *tv.SessionID)
 		return nil
 	}
-	s.recordCodexTranscriptAttention(tv, provider, *tv.SessionID, pending)
 	return &uiWaitingFor{
 		Kind: "question",
 		Cmd:  "Open session " + tv.Slug,
 		Why:  pending.Question,
 	}
-}
-
-func (s *Server) recordCodexTranscriptAttention(tv TaskView, provider, sessionID string, pending *codexPendingUserInput) {
-	if s.cfg.DB == nil || pending == nil || strings.TrimSpace(pending.CallID) == "" {
-		return
-	}
-	sourceID := strings.Join([]string{provider, sessionID, "request_user_input", pending.CallID}, ":")
-	id := flowdb.MonitorEventID(agentTranscriptMonitorSource, sourceID)
-	if _, err := flowdb.GetMonitorEvent(s.cfg.DB, id); err == nil {
-		return
-	}
-	title := provider + " " + tv.Slug + " needs input"
-	_, _, _ = flowdb.UpsertMonitorEvent(s.cfg.DB, flowdb.MonitorEventInput{
-		Source:   agentTranscriptMonitorSource,
-		Kind:     "elicitation",
-		SourceID: sourceID,
-		Title:    title,
-		Body:     pending.Question,
-		URL:      agentHookURL(tv.Slug),
-		Severity: "high",
-		RawJSON:  pending.RawJSON,
-	})
-}
-
-func (s *Server) clearCodexTranscriptAttention(provider, sessionID string) {
-	if s.cfg.DB == nil || strings.TrimSpace(sessionID) == "" {
-		return
-	}
-	prefix := strings.Join([]string{provider, sessionID, "request_user_input"}, ":") + ":%"
-	_, _ = s.cfg.DB.Exec(
-		`UPDATE monitor_events
-		    SET status = 'done'
-		  WHERE source = ?
-		    AND kind = 'elicitation'
-		    AND source_id LIKE ?
-		    AND status IN ('new', 'notified')`,
-		agentTranscriptMonitorSource, prefix,
-	)
 }
 
 func withTaskWorkDir(tv TaskView, workDir string) TaskView {
@@ -1190,24 +808,6 @@ func latestTranscriptAction(transcript []uiTranscript) string {
 		}
 	}
 	return ""
-}
-
-func (s *Server) uiPRLinks(taskSlug string) []uiPRLink {
-	links, err := flowdb.ListTaskPRLinks(s.cfg.DB, taskSlug)
-	if err != nil {
-		return nil
-	}
-	out := make([]uiPRLink, 0, len(links))
-	for _, link := range links {
-		out = append(out, uiPRLink{
-			Repo:     link.Repo,
-			Number:   link.PRNumber,
-			URL:      link.PRURL,
-			State:    link.State,
-			MergedAt: nullStringValue(link.MergedAt),
-		})
-	}
-	return out
 }
 
 func (s *Server) uiBacklog(tv TaskView) uiBacklogTask {
@@ -2057,16 +1657,6 @@ func nullStringValue(v sql.NullString) string {
 		return v.String
 	}
 	return ""
-}
-
-func lastSeenForSource(events []flowdb.MonitorEvent, source string) string {
-	last := ""
-	for _, event := range events {
-		if event.Source == source && event.LastSeenAt > last {
-			last = event.LastSeenAt
-		}
-	}
-	return last
 }
 
 func firstLine(s string) string {

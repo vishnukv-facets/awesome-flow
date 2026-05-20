@@ -59,8 +59,6 @@ type eventEnvelope struct {
 	Liveness    *eventLiveness    `json:"liveness,omitempty"`
 	Runtime     *eventRuntime     `json:"runtime,omitempty"`
 	HookHealth  *uiHookHealth     `json:"hook_health,omitempty"`
-	MonitorSync *eventMonitorSync `json:"monitor_sync,omitempty"`
-	InboxItem   *eventInboxItem   `json:"inbox_item,omitempty"`
 }
 
 type eventHookData struct {
@@ -84,43 +82,6 @@ type eventRuntime struct {
 	Provider string `json:"provider"`
 	Status   string `json:"status"`
 	Kind     string `json:"kind,omitempty"`
-}
-
-// eventMonitorSync mirrors a row of monitor_sync_state on the wire. Pushed
-// to /ws/events?types=monitor_sync subscribers when a poll starts (is_syncing
-// flips true) or ends (status + last_sync_at update). The Inbox UI uses
-// this to drive the per-source "syncing now…" / "synced 23s ago" badge
-// without polling the API.
-type eventMonitorSync struct {
-	Source     string `json:"source"`
-	IsSyncing  bool   `json:"is_syncing"`
-	LastStatus string `json:"last_status"`
-	LastSyncAt string `json:"last_sync_at,omitempty"`
-	LastError  string `json:"last_error,omitempty"`
-}
-
-// eventInboxItem is published when a new external-source event (slack /
-// github) lands as a fresh row in monitor_events. The UI uses it to (a)
-// add the item to the inbox list in real time without re-fetching
-// /api/ui-data, and (b) decide whether to fire a desktop notification
-// when NeedsReview is true. Re-polls of the same item never publish —
-// only the genuine-isNew transition fires this.
-//
-// NeedsReview captures whether the item should pull the user's attention
-// (notification level=approval, ping outcome, secret/write/reply note). It's
-// computed server-side so the client can fire the desktop notification before
-// the next /api/ui-data refresh hydrates the durable inbox row.
-type eventInboxItem struct {
-	EventID     string `json:"event_id"`
-	Source      string `json:"source"`
-	Kind        string `json:"kind"`
-	Title       string `json:"title"`
-	Body        string `json:"body,omitempty"`
-	URL         string `json:"url,omitempty"`
-	Severity    string `json:"severity"`
-	Level       string `json:"level,omitempty"`
-	NeedsReview bool   `json:"needs_review"`
-	Outcome     string `json:"outcome,omitempty"`
 }
 
 func newEventHub() *eventHub {
@@ -225,98 +186,6 @@ func (s *Server) publishHookEvent(resp agentHookIngestResponse, _ map[string]any
 	})
 }
 
-// publishInboxItem fans out a freshly-arrived external-source monitor
-// event so the Inbox UI can add the row without re-fetching /api/ui-data,
-// AND so the client can fire a desktop notification when needs_review is
-// true. Only "genuinely new" events fire this — re-polls of an existing
-// (source, source_id) pair are silent. The classifier matches the
-// frontend's monitorItemNeedsReview so backend / frontend agree on what
-// pulls user attention.
-func (s *Server) publishInboxItem(event flowdb.MonitorEvent, outcome string, note string) {
-	if s == nil || s.events == nil {
-		return
-	}
-	level := event.Severity
-	if notification, err := flowdb.GetMonitorNotificationForEvent(s.cfg.DB, event.ID); err == nil {
-		level = notification.Level
-	}
-	item := &eventInboxItem{
-		EventID:     event.ID,
-		Source:      event.Source,
-		Kind:        event.Kind,
-		Title:       event.Title,
-		Severity:    event.Severity,
-		Level:       level,
-		Outcome:     outcome,
-		NeedsReview: inboxNeedsReview(level, event.Severity, outcome, note),
-	}
-	if event.Body.Valid {
-		item.Body = event.Body.String
-	}
-	if event.URL.Valid {
-		item.URL = event.URL.String
-	}
-	s.events.publish(eventEnvelope{
-		Type:      "inbox_item",
-		InboxItem: item,
-	})
-}
-
-// inboxNeedsReview decides whether an inbox event should pull the user's
-// attention via a desktop notification. Mirrors the frontend's
-// monitorItemNeedsReview helper so both sides agree.
-//
-//	level=approval → always needs review (approval-mode Slack/GitHub item)
-//	severity=high   → always needs review (CI failed, security alert)
-//	outcome=ping    → the routing layer explicitly flagged "user attention"
-//	note mentions   → secret/write/reply/push/merge — words that imply a
-//	                  side-effect the user should consent to
-func inboxNeedsReview(level, severity, outcome, note string) bool {
-	if strings.EqualFold(level, "approval") {
-		return true
-	}
-	if strings.EqualFold(severity, "high") {
-		return true
-	}
-	if strings.EqualFold(outcome, "ping") {
-		return true
-	}
-	n := strings.ToLower(note)
-	for _, kw := range []string{"approval", "secret", "write", "reply", "push", "merge"} {
-		if strings.Contains(n, kw) {
-			return true
-		}
-	}
-	return false
-}
-
-// publishMonitorSync fans out a monitor-sync transition (start/end) so
-// the Inbox UI can update the per-source "syncing now…" / "synced X ago"
-// badge in real time. Safe to call before the hub exists (no-op). state
-// must be non-nil; pass the row returned from RecordMonitorSyncStart /
-// RecordMonitorSyncEnd directly — those functions already round-trip
-// through GetMonitorSyncState so the emitted shape matches what
-// /api/monitor/sync-state would return.
-func (s *Server) publishMonitorSync(state *flowdb.MonitorSyncState) {
-	if s == nil || s.events == nil || state == nil {
-		return
-	}
-	env := eventEnvelope{
-		Type: "monitor_sync",
-		MonitorSync: &eventMonitorSync{
-			Source:     state.Source,
-			IsSyncing:  state.IsSyncing,
-			LastStatus: state.LastStatus,
-		},
-	}
-	if state.LastSyncAt.Valid {
-		env.MonitorSync.LastSyncAt = state.LastSyncAt.String
-	}
-	if state.LastError.Valid {
-		env.MonitorSync.LastError = state.LastError.String
-	}
-	s.events.publish(env)
-}
 
 // publishLiveness fans out a liveness reconciler observation. Slug is
 // empty when no task is bound to the session.

@@ -273,18 +273,9 @@ func (s *Server) handleTaskRoute(w http.ResponseWriter, r *http.Request) {
 		writeNotFoundOrError(w, err)
 		return
 	}
-	// /inbox and /attachments accept writes. /lifecycle accepts GET. Everything
-	// else is GET-only and falls under the legacy gate below.
-	if len(parts) == 2 && parts[1] == "inbox" {
-		s.handleTaskInbox(w, r, task)
-		return
-	}
+	// /attachments accepts writes. Everything else is GET-only.
 	if len(parts) == 2 && parts[1] == "attachments" {
 		s.handleTaskAttachments(w, r, task)
-		return
-	}
-	if len(parts) == 2 && parts[1] == "lifecycle" {
-		s.handleTaskLifecycle(w, r, task)
 		return
 	}
 	if !getOnly(w, r) {
@@ -813,52 +804,6 @@ func (s *Server) handleTags(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, tags)
 }
-
-// handleMonitorSyncState returns the per-source ingest status the Inbox UI
-// renders ("Slack listening", "GitHub syncing now"). Always returns rows
-// for every known source — even if the source has never emitted state
-// (last_sync_at NULL, last_status='unknown') — so the UI can render all the
-// source badges from a single response without joining on a config list
-// elsewhere.
-func (s *Server) handleMonitorSyncState(w http.ResponseWriter, r *http.Request) {
-	if !getOnly(w, r) {
-		return
-	}
-	stored, err := flowdb.ListMonitorSyncStates(s.cfg.DB)
-	if err != nil {
-		writeError(w, err, http.StatusInternalServerError)
-		return
-	}
-	// Index stored rows for quick lookup, then synthesize empty rows for
-	// any known source the DB hasn't seen yet. Keeps the response shape
-	// stable across fresh installs vs heavily-used ones.
-	bySource := make(map[string]flowdb.MonitorSyncState, len(stored))
-	for _, s := range stored {
-		bySource[s.Source] = s
-	}
-	out := make([]MonitorSyncStateView, 0, len(knownMonitorSources))
-	for _, src := range knownMonitorSources {
-		view := MonitorSyncStateView{Source: src, LastStatus: "unknown"}
-		if row, ok := bySource[src]; ok {
-			if row.LastSyncAt.Valid {
-				view.LastSyncAt = row.LastSyncAt.String
-			}
-			view.LastStatus = row.LastStatus
-			if row.LastError.Valid {
-				view.LastError = row.LastError.String
-			}
-			view.IsSyncing = row.IsSyncing
-			view.UpdatedAt = row.UpdatedAt
-		}
-		out = append(out, view)
-	}
-	writeJSON(w, MonitorSyncStateResponse{States: out})
-}
-
-// knownMonitorSources is the canonical source list the API guarantees a
-// row for. Keep alphabetical to match flowdb.ListMonitorSyncStates's
-// ORDER BY — the UI relies on stable rendering order.
-var knownMonitorSources = []string{"github", "slack"}
 
 func (s *Server) handleKB(w http.ResponseWriter, r *http.Request) {
 	if !getOnly(w, r) {
