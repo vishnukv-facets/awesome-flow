@@ -139,11 +139,16 @@ func BuildSlackTaskTitle(ctx context.Context, client SlackTitleClient, decision 
 	if channelID == "" || threadTS == "" {
 		return "", errors.New("slack channel and thread_ts are required")
 	}
-	conversation, err := client.ConversationInfo(ctx, channelID)
-	if err != nil {
-		return "", err
+	var prefix string
+	if conversation, err := client.ConversationInfo(ctx, channelID); err == nil {
+		prefix = slackTitlePrefix(ctx, client, conversation, channelID, selfUserIDs)
+	} else if authorID := strings.TrimSpace(decision.Event.ItemAuthor); authorID != "" {
+		// ConversationInfo failed (commonly a missing channels:read /
+		// groups:read scope on the token). The thread reply below is
+		// fetched independently, so we can still build a useful title
+		// from the message author's display name.
+		prefix = slackUserDisplayName(ctx, client, authorID)
 	}
-	prefix := slackTitlePrefix(ctx, client, conversation, channelID, selfUserIDs)
 	if prefix == "" {
 		prefix = channelID
 	}

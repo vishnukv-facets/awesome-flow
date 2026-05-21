@@ -134,10 +134,73 @@ func TestBuildSlackTaskTitleChannelUsesChannelName(t *testing.T) {
 	}
 }
 
-func TestBuildSlackTaskTitleReturnsErrorWhenMetadataUnavailable(t *testing.T) {
-	decision := ReactionDecision{Channel: "D123", ThreadTS: "1779345633.950689"}
-	_, err := BuildSlackTaskTitle(context.Background(), fakeSlackTitleClient{err: errors.New("slack down")}, decision, nil)
-	if err == nil {
-		t.Fatal("expected Slack metadata error")
+func TestBuildSlackTaskTitleFallsBackToChannelIDWhenAllAPIsError(t *testing.T) {
+	decision := ReactionDecision{Channel: "C123", ThreadTS: "1779345633.950689"}
+	got, err := BuildSlackTaskTitle(context.Background(), fakeSlackTitleClient{err: errors.New("slack down")}, decision, nil)
+	if err != nil {
+		t.Fatalf("BuildSlackTaskTitle: %v", err)
 	}
+	if got != "C123" {
+		t.Fatalf("title = %q, want %q (graceful channel-id fallback)", got, "C123")
+	}
+}
+
+// When channels:read is missing the bot/user token, ConversationInfo errors
+// but ConversationReplies + UserInfo can still succeed. We should still
+// build a useful "<author> - <first line>" title.
+func TestBuildSlackTaskTitleUsesItemAuthorWhenConversationInfoFails(t *testing.T) {
+	client := stubSlackTitleClient{
+		conversationErr: errors.New("missing_scope"),
+		replies: map[string][]SlackMessage{
+			"C123:1779268097.778199": {
+				{User: "U_ishan", Text: "we can now start with the coinswitch csx project"},
+			},
+		},
+		users: map[string]SlackUser{
+			"U_ishan": {ID: "U_ishan", DisplayName: "Ishaan Kalra"},
+		},
+	}
+	decision := ReactionDecision{
+		Channel:   "C123",
+		ThreadTS:  "1779268097.778199",
+		ThreadKey: "C123:1779268097.778199",
+		Event:     InboundEvent{ItemAuthor: "U_ishan"},
+	}
+
+	got, err := BuildSlackTaskTitle(context.Background(), client, decision, nil)
+	if err != nil {
+		t.Fatalf("BuildSlackTaskTitle: %v", err)
+	}
+	want := "Ishaan Kalra - we can now start with the coinswitch csx project"
+	if got != want {
+		t.Fatalf("title = %q, want %q", got, want)
+	}
+}
+
+// stubSlackTitleClient lets specific API calls return error independently,
+// which the shared fakeSlackTitleClient (single err field) cannot model.
+type stubSlackTitleClient struct {
+	conversationErr error
+	conversations   map[string]SlackConversation
+	replies         map[string][]SlackMessage
+	users           map[string]SlackUser
+}
+
+func (s stubSlackTitleClient) ConversationInfo(_ context.Context, channelID string) (SlackConversation, error) {
+	if s.conversationErr != nil {
+		return SlackConversation{}, s.conversationErr
+	}
+	return s.conversations[channelID], nil
+}
+
+func (s stubSlackTitleClient) ConversationReplies(_ context.Context, channelID, threadTS string, _ int) ([]SlackMessage, error) {
+	return s.replies[channelID+":"+threadTS], nil
+}
+
+func (s stubSlackTitleClient) UsersInConversation(_ context.Context, _ string, _ int) ([]string, error) {
+	return nil, nil
+}
+
+func (s stubSlackTitleClient) UserInfo(_ context.Context, userID string) (SlackUser, error) {
+	return s.users[userID], nil
 }
