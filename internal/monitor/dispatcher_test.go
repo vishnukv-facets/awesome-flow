@@ -17,9 +17,10 @@ import (
 // tests to assert on the orchestration without actually running flow CLI
 // subprocesses.
 type spawnCall struct {
-	Name  string
-	Slug  string
-	Brief string
+	Name     string
+	Slug     string
+	Brief    string
+	Provider string
 }
 
 type tagCall struct {
@@ -42,10 +43,10 @@ func stubDispatcherIO(t *testing.T) (*[]spawnCall, *[]tagCall, *[]string, func()
 	origTag := tagFlowTask
 	origOpen := openSlackReplyTask
 
-	spawnFlowTask = func(_ context.Context, name, slug, brief string) error {
+	spawnFlowTask = func(_ context.Context, name, slug, brief, provider string) error {
 		mu.Lock()
 		defer mu.Unlock()
-		spawns = append(spawns, spawnCall{Name: name, Slug: slug, Brief: brief})
+		spawns = append(spawns, spawnCall{Name: name, Slug: slug, Brief: brief, Provider: provider})
 		return nil
 	}
 	tagFlowTask = func(_ context.Context, slug, tag string) error {
@@ -147,6 +148,38 @@ func TestDispatcher_NewThreadReactionSpawnsAndAppends(t *testing.T) {
 
 	if len(*opens) != 0 {
 		t.Errorf("AUTOOPEN=0 should suppress opens; got %v", *opens)
+	}
+}
+
+func TestDispatcher_CodexEmojiSpawnsCodexProvider(t *testing.T) {
+	t.Setenv("FLOW_SLACK_SELF_USER_IDS", "U_me")
+	t.Setenv("FLOW_SLACK_TRIGGER_EMOJI", "claude,codex")
+	t.Setenv("FLOW_SLACK_AUTOOPEN", "0")
+	db := dispatcherTestDB(t)
+	spawns, _, _, restore := stubDispatcherIO(t)
+	defer restore()
+
+	d := NewDispatcher(db, nil)
+	// A :codex: reaction must route to the codex agent. A :claude:
+	// reaction in the same workspace continues to route to claude — the
+	// emoji-to-provider mapping must be per-event, not per-installation.
+	codexEv := mustParseReaction(t, "U_me", "codex", "C123", "1.10", "1.01")
+	if err := d.Dispatch(context.Background(), codexEv); err != nil {
+		t.Fatalf("dispatch codex: %v", err)
+	}
+	claudeEv := mustParseReaction(t, "U_me", "claude", "C456", "1.20", "1.02")
+	if err := d.Dispatch(context.Background(), claudeEv); err != nil {
+		t.Fatalf("dispatch claude: %v", err)
+	}
+
+	if len(*spawns) != 2 {
+		t.Fatalf("spawn count = %d, want 2", len(*spawns))
+	}
+	if (*spawns)[0].Provider != "codex" {
+		t.Errorf("codex spawn provider = %q, want codex", (*spawns)[0].Provider)
+	}
+	if (*spawns)[1].Provider != "claude" {
+		t.Errorf("claude spawn provider = %q, want claude", (*spawns)[1].Provider)
 	}
 }
 

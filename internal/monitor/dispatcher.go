@@ -73,7 +73,7 @@ func (d *Dispatcher) Dispatch(ctx context.Context, ev InboundEvent) error {
 }
 
 func (d *Dispatcher) dispatchReaction(ctx context.Context, ev InboundEvent) error {
-	decision := DecideReaction(ev, TriggerEmoji(), SelfUserIDs())
+	decision := DecideReaction(ev, TriggerEmojis(), SelfUserIDs())
 	if !decision.Trigger {
 		return nil
 	}
@@ -156,7 +156,8 @@ func (d *Dispatcher) createSlackTask(ctx context.Context, decision ReactionDecis
 		name = strings.TrimSpace(enriched)
 	}
 	brief := slackTaskBrief(decision, slug, name)
-	if err := spawnFlowTask(ctx, name, slug, brief); err != nil {
+	provider := ProviderForEmoji(decision.Reaction)
+	if err := spawnFlowTask(ctx, name, slug, brief, provider); err != nil {
 		return "", err
 	}
 	if err := tagFlowTask(ctx, slug, "slack-reply"); err != nil {
@@ -396,15 +397,21 @@ func slackAutoOpenEnabled() bool {
 	return envBoolDefault("FLOW_SLACK_AUTOOPEN", true)
 }
 
-// spawnFlowTask shells out to `flow spawn` with --no-open. Package-level
-// variable so tests can swap it.
-var spawnFlowTask = func(ctx context.Context, name, slug, brief string) error {
-	cmd := exec.CommandContext(ctx, "flow", "spawn", name,
+// spawnFlowTask shells out to `flow spawn` with --no-open. The provider
+// arg routes the new task to either Claude or Codex (mapped from the
+// Slack trigger emoji). Empty provider lets `flow spawn` apply its own
+// default. Package-level variable so tests can swap it.
+var spawnFlowTask = func(ctx context.Context, name, slug, brief, provider string) error {
+	args := []string{"spawn", name,
 		"--slug", slug,
 		"--priority", "high",
 		"--prompt", brief,
 		"--no-open",
-	)
+	}
+	if p := strings.TrimSpace(provider); p != "" {
+		args = append(args, "--agent", p)
+	}
+	cmd := exec.CommandContext(ctx, "flow", args...)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("flow spawn: %w (output: %s)", err, strings.TrimSpace(string(out)))

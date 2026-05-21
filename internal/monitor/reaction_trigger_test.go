@@ -20,6 +20,52 @@ func TestTriggerEmoji_StripsColons(t *testing.T) {
 	}
 }
 
+func TestTriggerEmojis_MultiValue(t *testing.T) {
+	t.Setenv("FLOW_SLACK_TRIGGER_EMOJI", ":claude:, :codex: , claude ")
+	got := TriggerEmojis()
+	if len(got) != 2 || got[0] != "claude" || got[1] != "codex" {
+		t.Fatalf("multi-value emojis = %v, want [claude codex] (dedup, order-preserved)", got)
+	}
+}
+
+func TestTriggerEmojis_DefaultsToClaude(t *testing.T) {
+	t.Setenv("FLOW_SLACK_TRIGGER_EMOJI", "  ")
+	got := TriggerEmojis()
+	if len(got) != 1 || got[0] != DefaultTriggerEmoji {
+		t.Fatalf("blank env emojis = %v, want [%s]", got, DefaultTriggerEmoji)
+	}
+}
+
+func TestProviderForEmoji(t *testing.T) {
+	cases := map[string]string{
+		"claude":      "claude",
+		"Claude":      "claude",
+		"codex":       "codex",
+		"CODEX":       "codex",
+		"flow-claude": "claude", // legacy custom emoji
+		"":            "claude",
+	}
+	for in, want := range cases {
+		if got := ProviderForEmoji(in); got != want {
+			t.Errorf("ProviderForEmoji(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+func TestDecideReaction_CodexEmojiFires(t *testing.T) {
+	ev := mustParseReaction(t, "U_me", "codex", "C123", "1.5", "1.1")
+	got := DecideReaction(ev, []string{"claude", "codex"}, []string{"U_me"})
+	if !got.Trigger {
+		t.Fatalf("codex emoji in trigger set should fire; got %+v", got)
+	}
+	if got.Reaction != "codex" {
+		t.Errorf("matched reaction echoed back = %q, want codex", got.Reaction)
+	}
+	if p := ProviderForEmoji(got.Reaction); p != "codex" {
+		t.Errorf("derived provider = %q, want codex", p)
+	}
+}
+
 func TestSelfUserIDs_MultiValue(t *testing.T) {
 	t.Setenv("FLOW_SLACK_SELF_USER_IDS", " U123, U456,U789 ,,, ")
 	t.Setenv("FLOW_SLACK_SELF_USER_ID", "")
@@ -50,7 +96,7 @@ func TestThreadKey_Empty(t *testing.T) {
 
 func TestDecideReaction_HappyPath(t *testing.T) {
 	ev := mustParseReaction(t, "U_me", "flow-claude", "C123", "1234.0005", "1234.0001")
-	got := DecideReaction(ev, "flow-claude", []string{"U_me"})
+	got := DecideReaction(ev, []string{"flow-claude"},[]string{"U_me"})
 	if !got.Trigger {
 		t.Fatalf("expected Trigger=true, got %+v", got)
 	}
@@ -66,7 +112,7 @@ func TestDecideReaction_NonSelfUserDropped(t *testing.T) {
 	// A colleague reacted with our trigger emoji on a message. We must NOT
 	// fire — only consent from "us" counts.
 	ev := mustParseReaction(t, "U_coworker", "flow-claude", "C123", "1.5", "1.1")
-	got := DecideReaction(ev, "flow-claude", []string{"U_me"})
+	got := DecideReaction(ev, []string{"flow-claude"},[]string{"U_me"})
 	if got.Trigger {
 		t.Fatalf("coworker reaction should not trigger; got %+v", got)
 	}
@@ -74,7 +120,7 @@ func TestDecideReaction_NonSelfUserDropped(t *testing.T) {
 
 func TestDecideReaction_DifferentEmojiDropped(t *testing.T) {
 	ev := mustParseReaction(t, "U_me", "thumbsup", "C123", "1.5", "1.1")
-	got := DecideReaction(ev, "flow-claude", []string{"U_me"})
+	got := DecideReaction(ev, []string{"flow-claude"},[]string{"U_me"})
 	if got.Trigger {
 		t.Fatalf("non-trigger emoji should not fire; got %+v", got)
 	}
@@ -82,7 +128,7 @@ func TestDecideReaction_DifferentEmojiDropped(t *testing.T) {
 
 func TestDecideReaction_EmojiCaseInsensitive(t *testing.T) {
 	ev := mustParseReaction(t, "U_me", "Flow-Claude", "C123", "1.5", "1.1")
-	got := DecideReaction(ev, "flow-claude", []string{"U_me"})
+	got := DecideReaction(ev, []string{"flow-claude"},[]string{"U_me"})
 	if !got.Trigger {
 		t.Fatalf("emoji match should be case-insensitive")
 	}
@@ -90,7 +136,7 @@ func TestDecideReaction_EmojiCaseInsensitive(t *testing.T) {
 
 func TestDecideReaction_NonReactionEventDropped(t *testing.T) {
 	msg := InboundEvent{Kind: "message", Channel: "C1", ThreadTS: "1.1", UserID: "U_me"}
-	got := DecideReaction(msg, "flow-claude", []string{"U_me"})
+	got := DecideReaction(msg, []string{"flow-claude"}, []string{"U_me"})
 	if got.Trigger {
 		t.Fatalf("message event must not trigger reaction decision; got %+v", got)
 	}
@@ -100,7 +146,7 @@ func TestDecideReaction_NoSelfUserIDsRefuses(t *testing.T) {
 	// Safety: when SelfUserIDs() returns empty (operator forgot to configure),
 	// the handler must refuse to fire on any reaction, not fire on all.
 	ev := mustParseReaction(t, "U_me", "flow-claude", "C123", "1.5", "1.1")
-	got := DecideReaction(ev, "flow-claude", nil)
+	got := DecideReaction(ev, []string{"flow-claude"},nil)
 	if got.Trigger {
 		t.Fatalf("empty self user IDs must refuse to trigger; got %+v", got)
 	}

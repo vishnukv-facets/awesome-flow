@@ -12,16 +12,64 @@ import (
 // flow + claude brand.
 const DefaultTriggerEmoji = "claude"
 
-// TriggerEmoji resolves the configured trigger emoji shortname, with the
-// surrounding colons stripped (so ":flow-claude:" and "flow-claude" both
-// resolve identically). Empty / whitespace env values fall through to
-// DefaultTriggerEmoji.
+// TriggerEmoji resolves the first configured trigger emoji shortname. It
+// exists for callers that only care about one canonical value (logging,
+// brief text). Most production code should use TriggerEmojis() instead so
+// multi-provider triggers ("claude" → Claude, "codex" → Codex) work.
 func TriggerEmoji() string {
-	e := strings.Trim(strings.TrimSpace(os.Getenv("FLOW_SLACK_TRIGGER_EMOJI")), ":")
-	if e == "" {
-		return DefaultTriggerEmoji
+	emojis := TriggerEmojis()
+	return emojis[0]
+}
+
+// TriggerEmojis resolves the full set of configured trigger emoji
+// shortnames. The env var accepts a comma- or whitespace-separated list
+// (with optional surrounding colons), so all of these are equivalent:
+//
+//	FLOW_SLACK_TRIGGER_EMOJI=claude
+//	FLOW_SLACK_TRIGGER_EMOJI=":claude:,:codex:"
+//	FLOW_SLACK_TRIGGER_EMOJI="claude codex"
+//
+// Empty / whitespace env values fall through to [DefaultTriggerEmoji].
+// Duplicates are de-duped (case-insensitive). Order is preserved so the
+// first entry stays stable as the "primary" emoji.
+func TriggerEmojis() []string {
+	raw := strings.TrimSpace(os.Getenv("FLOW_SLACK_TRIGGER_EMOJI"))
+	if raw == "" {
+		return []string{DefaultTriggerEmoji}
 	}
-	return e
+	parts := strings.FieldsFunc(raw, func(r rune) bool {
+		return r == ',' || r == ' ' || r == '\t' || r == '\n'
+	})
+	out := make([]string, 0, len(parts))
+	seen := map[string]bool{}
+	for _, p := range parts {
+		e := strings.Trim(strings.TrimSpace(p), ":")
+		if e == "" {
+			continue
+		}
+		k := strings.ToLower(e)
+		if seen[k] {
+			continue
+		}
+		seen[k] = true
+		out = append(out, e)
+	}
+	if len(out) == 0 {
+		return []string{DefaultTriggerEmoji}
+	}
+	return out
+}
+
+// ProviderForEmoji maps a Slack trigger emoji shortname to the agent
+// provider that should service it. The emoji name is taken literally:
+// ":codex:" → "codex", ":claude:" → "claude". Anything else (legacy
+// custom workspace emojis like ":flow-claude:" or ":robot:") falls back
+// to "claude" so existing installations keep working.
+func ProviderForEmoji(emoji string) string {
+	if strings.EqualFold(strings.TrimSpace(emoji), "codex") {
+		return "codex"
+	}
+	return "claude"
 }
 
 // SelfUserIDs returns the Slack user IDs that count as "the user" for
@@ -94,21 +142,31 @@ type ReactionDecision struct {
 // ALL of these hold:
 //
 //   - Kind == "reaction_added"
-//   - Reaction (case-insensitive) == triggerEmoji
+//   - Reaction (case-insensitive) matches one of triggerEmojis
 //   - Reactor (UserID) is in selfUserIDs
 //   - Channel + ThreadTS are present (so ThreadKey is meaningful)
 //
 // The integration layer then uses ThreadKey to look up an existing task
-// or create a new one, and appends the event to that task's inbox.
+// or create a new one, and appends the event to that task's inbox. The
+// matched emoji is echoed back via [ReactionDecision.Reaction] so the
+// caller can pick an agent provider from it (see [ProviderForEmoji]).
 //
 // Pass an empty selfUserIDs to short-circuit all reactions to non-trigger
 // — useful for tests and as a safety net when SelfUserIDs() resolves to
 // empty (operator hasn't configured their Slack user id).
-func DecideReaction(ev InboundEvent, triggerEmoji string, selfUserIDs []string) ReactionDecision {
+func DecideReaction(ev InboundEvent, triggerEmojis []string, selfUserIDs []string) ReactionDecision {
 	if ev.Kind != "reaction_added" {
 		return ReactionDecision{}
 	}
-	if !strings.EqualFold(strings.TrimSpace(ev.Reaction), strings.TrimSpace(triggerEmoji)) {
+	want := strings.TrimSpace(ev.Reaction)
+	matched := false
+	for _, e := range triggerEmojis {
+		if strings.EqualFold(want, strings.TrimSpace(e)) {
+			matched = true
+			break
+		}
+	}
+	if !matched {
 		return ReactionDecision{}
 	}
 	if !containsUserID(selfUserIDs, ev.UserID) {
