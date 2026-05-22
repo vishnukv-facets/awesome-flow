@@ -63,6 +63,45 @@ func TestOpenDBIdempotent(t *testing.T) {
 	db2.Close()
 }
 
+func TestGitHubEventLogRecordsFirstEventOnly(t *testing.T) {
+	db := openTempDB(t)
+	insertTask(t, db, "gh-pr-flow-42", "Review flow PR", "backlog", "high", t.TempDir(), nil)
+
+	recorded, err := RecordGitHubEvent(db, GitHubEventLogEntry{
+		EventKey:  "review-comment:MDU6PRRC_kwDOAAABBB",
+		EventKind: "pr_review_comment",
+		TaskSlug:  "gh-pr-flow-42",
+		RawJSON:   `{"id":123}`,
+	})
+	if err != nil {
+		t.Fatalf("RecordGitHubEvent first: %v", err)
+	}
+	if !recorded {
+		t.Fatal("first event should be recorded")
+	}
+
+	seen, err := HasGitHubEvent(db, "review-comment:MDU6PRRC_kwDOAAABBB")
+	if err != nil {
+		t.Fatalf("HasGitHubEvent: %v", err)
+	}
+	if !seen {
+		t.Fatal("recorded event should be seen")
+	}
+
+	recorded, err = RecordGitHubEvent(db, GitHubEventLogEntry{
+		EventKey:  "review-comment:MDU6PRRC_kwDOAAABBB",
+		EventKind: "pr_review_comment",
+		TaskSlug:  "gh-pr-flow-42",
+		RawJSON:   `{"id":123}`,
+	})
+	if err != nil {
+		t.Fatalf("RecordGitHubEvent duplicate: %v", err)
+	}
+	if recorded {
+		t.Fatal("duplicate event should not be recorded")
+	}
+}
+
 // TestOpenDBConcurrentDoesNotBusy pins that two parallel OpenDB calls
 // on the same path don't race during schema setup. Without busy_timeout
 // applied at open time, the loser hits SQLITE_BUSY on `pragma
@@ -662,4 +701,26 @@ func TestMigrationDeduplicatesSessionIDs(t *testing.T) {
 		t.Fatalf("second reopen failed: %v", err)
 	}
 	db2.Close()
+}
+
+func TestTaskDoneAllowsNoSessionID(t *testing.T) {
+	db := openTempDB(t)
+	now := NowISO()
+	if _, err := db.Exec(
+		`INSERT INTO tasks (slug, name, status, priority, work_dir, created_at, updated_at)
+		 VALUES ('external-close', 'External Close', 'done', 'medium', '/tmp', ?, ?)`,
+		now, now,
+	); err != nil {
+		t.Fatalf("insert done task without session_id: %v", err)
+	}
+	task, err := GetTask(db, "external-close")
+	if err != nil {
+		t.Fatalf("GetTask: %v", err)
+	}
+	if task.Status != "done" {
+		t.Fatalf("status = %q, want done", task.Status)
+	}
+	if task.SessionID.Valid {
+		t.Fatalf("session_id = %q, want NULL", task.SessionID.String)
+	}
 }

@@ -70,7 +70,7 @@ CREATE TABLE IF NOT EXISTS tasks (
     updated_at            TEXT NOT NULL,
     archived_at           TEXT,
     deleted_at            TEXT,
-    CHECK (status = 'backlog' OR session_id IS NOT NULL OR (session_provider = 'codex' AND status = 'in-progress'))
+    CHECK (status IN ('backlog','done') OR session_id IS NOT NULL OR (session_provider = 'codex' AND status = 'in-progress'))
 );
 
 CREATE TABLE IF NOT EXISTS workdirs (
@@ -87,6 +87,14 @@ CREATE TABLE IF NOT EXISTS task_tags (
     tag         TEXT NOT NULL,
     created_at  TEXT NOT NULL,
     PRIMARY KEY (task_slug, tag)
+);
+
+CREATE TABLE IF NOT EXISTS github_event_log (
+    event_key    TEXT PRIMARY KEY,
+    event_kind   TEXT NOT NULL,
+    task_slug    TEXT REFERENCES tasks(slug) ON DELETE SET NULL,
+    raw_json     TEXT,
+    processed_at TEXT NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS agent_runtime_states (
@@ -156,6 +164,7 @@ CREATE INDEX IF NOT EXISTS idx_tasks_project    ON tasks(project_slug);
 CREATE INDEX IF NOT EXISTS idx_tasks_status     ON tasks(status);
 CREATE INDEX IF NOT EXISTS idx_tasks_updated_at ON tasks(updated_at);
 CREATE INDEX IF NOT EXISTS idx_task_tags_tag    ON task_tags(tag);
+CREATE INDEX IF NOT EXISTS idx_github_event_log_task ON github_event_log(task_slug);
 CREATE INDEX IF NOT EXISTS idx_agent_runtime_states_task ON agent_runtime_states(task_slug);
 CREATE INDEX IF NOT EXISTS idx_agent_runtime_states_updated ON agent_runtime_states(updated_at);
 CREATE INDEX IF NOT EXISTS idx_task_dependencies_parent ON task_dependencies(parent_slug);
@@ -1147,14 +1156,15 @@ func migrateTasksSessionIDUnique(db *sql.DB) error {
 }
 
 // migrateTasksSessionInvariant rebuilds the tasks table to enforce the
-// session binding invariant. Claude tasks must carry session_id once
-// non-backlog; Codex tasks may briefly be in-progress with no session_id
-// while flow captures the id that Codex generated. SQLite does not support
-// adding a CHECK constraint to an existing table via ALTER TABLE, so the
-// documented procedure (CREATE new, copy, DROP old, RENAME) is used.
-// Existing non-Codex violators are demoted to backlog first (with a stderr
-// summary), since there is no way to invent a session_id for them after the
-// fact.
+// session binding invariant. In-progress Claude tasks must carry session_id;
+// Codex tasks may briefly be in-progress with no session_id while flow
+// captures the id that Codex generated. Terminal done tasks may be closed by
+// external automation (for example, a merged GitHub PR) without a local agent
+// transcript. SQLite does not support changing a CHECK constraint in place, so
+// the documented CREATE-new, copy, DROP-old, RENAME procedure is used.
+// Existing non-Codex in-progress violators are demoted to backlog first (with
+// a stderr summary), since there is no way to invent a session_id for them
+// after the fact.
 func migrateTasksSessionInvariant(db *sql.DB) error {
 	var ddl string
 	if err := db.QueryRow(
@@ -1162,7 +1172,7 @@ func migrateTasksSessionInvariant(db *sql.DB) error {
 	).Scan(&ddl); err != nil {
 		return fmt.Errorf("inspect tasks ddl: %w", err)
 	}
-	if strings.Contains(ddl, "session_provider = 'codex' AND status = 'in-progress'") {
+	if strings.Contains(ddl, "status IN ('backlog','done') OR session_id IS NOT NULL") {
 		return nil
 	}
 
@@ -1170,7 +1180,7 @@ func migrateTasksSessionInvariant(db *sql.DB) error {
 	var vs []violator
 	rows, err := db.Query(
 		`SELECT slug, status FROM tasks
-		 WHERE status != 'backlog'
+		 WHERE status = 'in-progress'
 		   AND session_id IS NULL
 		   AND NOT (session_provider = 'codex' AND status = 'in-progress')`,
 	)
@@ -1194,7 +1204,7 @@ func migrateTasksSessionInvariant(db *sql.DB) error {
 	if len(vs) > 0 {
 		fmt.Fprintf(os.Stderr,
 			"flow migration: demoting %d task(s) without session_id back to backlog "+
-				"(only backlog may have NULL session_id under the new invariant):\n",
+				"(in-progress tasks require session_id under the new invariant):\n",
 			len(vs))
 		for _, v := range vs {
 			fmt.Fprintf(os.Stderr, "  %s (was %s)\n", v.slug, v.prevStatus)
@@ -1202,7 +1212,7 @@ func migrateTasksSessionInvariant(db *sql.DB) error {
 		if _, err := db.Exec(
 			`UPDATE tasks
 			 SET status='backlog', updated_at=?
-			 WHERE status != 'backlog'
+			 WHERE status = 'in-progress'
 			   AND session_id IS NULL
 			   AND NOT (session_provider = 'codex' AND status = 'in-progress')`,
 			NowISO(),
@@ -1237,6 +1247,7 @@ func migrateTasksSessionInvariant(db *sql.DB) error {
 			status                TEXT NOT NULL DEFAULT 'backlog' CHECK (status IN ('backlog','in-progress','done')),
 			kind                  TEXT NOT NULL DEFAULT 'regular' CHECK (kind IN ('regular','playbook_run')),
 			playbook_slug         TEXT REFERENCES playbooks(slug),
+			parent_slug           TEXT REFERENCES tasks(slug),
 			priority              TEXT NOT NULL DEFAULT 'medium' CHECK (priority IN ('high','medium','low')),
 			work_dir              TEXT NOT NULL,
 			waiting_on            TEXT,
@@ -1248,27 +1259,30 @@ func migrateTasksSessionInvariant(db *sql.DB) error {
 			session_id            TEXT,
 			session_started       TEXT,
 			session_last_resumed  TEXT,
+			session_path          TEXT,
+			worktree_path         TEXT,
+			inbox_seen_at         TEXT,
 			created_at            TEXT NOT NULL,
 			updated_at            TEXT NOT NULL,
 			archived_at           TEXT,
 			deleted_at            TEXT,
-			CHECK (status = 'backlog' OR session_id IS NOT NULL OR (session_provider = 'codex' AND status = 'in-progress'))
+			CHECK (status IN ('backlog','done') OR session_id IS NOT NULL OR (session_provider = 'codex' AND status = 'in-progress'))
 		)`); err != nil {
 		return fmt.Errorf("create tasks_new: %w", err)
 	}
 
 	if _, err := tx.Exec(`
 		INSERT INTO tasks_new (
-			slug, name, project_slug, status, kind, playbook_slug, priority,
+			slug, name, project_slug, status, kind, playbook_slug, parent_slug, priority,
 			work_dir, waiting_on, due_date, assignee, permission_mode, status_changed_at,
 			session_provider, session_id, session_started, session_last_resumed,
-			created_at, updated_at, archived_at, deleted_at
+			session_path, worktree_path, inbox_seen_at, created_at, updated_at, archived_at, deleted_at
 		)
 		SELECT
-			slug, name, project_slug, status, kind, playbook_slug, priority,
+			slug, name, project_slug, status, kind, playbook_slug, parent_slug, priority,
 			work_dir, waiting_on, due_date, assignee, permission_mode, status_changed_at,
 			COALESCE(NULLIF(session_provider, ''), 'claude'), session_id, session_started, session_last_resumed,
-			created_at, updated_at, archived_at, deleted_at
+			session_path, worktree_path, inbox_seen_at, created_at, updated_at, archived_at, deleted_at
 		FROM tasks`); err != nil {
 		return fmt.Errorf("copy rows: %w", err)
 	}
@@ -1809,6 +1823,59 @@ func ListAllTags(db *sql.DB) ([]TagCount, error) {
 		out = append(out, tc)
 	}
 	return out, rows.Err()
+}
+
+// GitHubEventLogEntry is one processed GitHub event/comment recorded for
+// idempotency. EventKey is a stable external key such as
+// "pr:owner/repo#123:review_requested" or "review-comment:<node_id>".
+type GitHubEventLogEntry struct {
+	EventKey  string
+	EventKind string
+	TaskSlug  string
+	RawJSON   string
+}
+
+// HasGitHubEvent reports whether eventKey has already been processed.
+func HasGitHubEvent(db *sql.DB, eventKey string) (bool, error) {
+	key := strings.TrimSpace(eventKey)
+	if key == "" {
+		return false, fmt.Errorf("github event key is empty")
+	}
+	var n int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM github_event_log WHERE event_key = ?`, key).Scan(&n); err != nil {
+		return false, fmt.Errorf("check github event %s: %w", key, err)
+	}
+	return n > 0, nil
+}
+
+// RecordGitHubEvent records a processed GitHub event. The returned bool is
+// true only for the first insert; duplicate keys return false with nil error.
+func RecordGitHubEvent(db *sql.DB, entry GitHubEventLogEntry) (bool, error) {
+	key := strings.TrimSpace(entry.EventKey)
+	if key == "" {
+		return false, fmt.Errorf("github event key is empty")
+	}
+	kind := strings.TrimSpace(entry.EventKind)
+	if kind == "" {
+		return false, fmt.Errorf("github event kind is empty")
+	}
+	var taskSlug any
+	if slug := strings.TrimSpace(entry.TaskSlug); slug != "" {
+		taskSlug = slug
+	}
+	res, err := db.Exec(
+		`INSERT OR IGNORE INTO github_event_log (event_key, event_kind, task_slug, raw_json, processed_at)
+		 VALUES (?, ?, ?, ?, ?)`,
+		key, kind, taskSlug, strings.TrimSpace(entry.RawJSON), NowISO(),
+	)
+	if err != nil {
+		return false, fmt.Errorf("record github event %s: %w", key, err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("record github event %s rows affected: %w", key, err)
+	}
+	return n > 0, nil
 }
 
 // UpsertPlaybook inserts a new playbook or updates an existing row by slug.

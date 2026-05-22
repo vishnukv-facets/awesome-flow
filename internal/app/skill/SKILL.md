@@ -2253,6 +2253,63 @@ under the `tags:` line), follow this bootstrap:
   new thread, they add a reaction. Don't manually create slack-reply
   tasks for threads they didn't consent to.
 
+## 10c. GitHub PR and issue tasks (monitor pipeline)
+
+`flow ui serve` can also host a GitHub polling listener when the user
+starts it with `FLOW_GH_ENABLED=1` and `FLOW_GH_SELF_LOGINS=<login>`.
+Set `FLOW_GH_REPOS=owner/repo,owner/repo2` only when the user wants a
+narrow repo allowlist; unset means all repos visible to the authenticated
+`gh` CLI. The listener turns open assigned issues, open assigned PRs,
+open PRs requesting the user's review, tracked PR review comments, PR
+head updates, and PR merges into flow inbox events.
+
+GitHub-origin tasks are tagged `github` plus either
+`gh-pr:<owner>/<repo>#<number>` or `gh-issue:<owner>/<repo>#<number>`.
+The tag is the durable linkage. Do not infer linkage from the task slug
+or GitHub URL when the tag exists.
+
+If your task carries a `gh-pr:` or `gh-issue:` tag (`flow show task`
+lists tags under the `tags:` line), follow this bootstrap:
+
+1. **Confirm the monitor is running when live follow-up matters.** If you
+   are expected to receive new review comments, new commits, or merge
+   notifications while working, make sure `flow ui serve` is running
+   with `FLOW_GH_ENABLED=1` and `FLOW_GH_SELF_LOGINS` set. If the user
+   wants only a one-time review and no live follow-up, note that choice.
+2. **Read your brief.** It is a snapshot of the PR/issue at task
+   creation time: title, URL, author, labels, milestone, base/head refs,
+   and the initial GitHub body. Treat it as initial context, not the
+   live source of truth.
+3. **Catch up on the inbox.** Read every line of
+   `~/.flow/tasks/<your-slug>/inbox.jsonl` in order. Each line is a JSON
+   object `{enqueued_at, event}` where `event.Kind` may include
+   `pr_assigned`, `pr_review_requested`, `issue_assigned`,
+   `pr_review_comment`, `pr_head_updated`, or `pr_merged`.
+4. **Arm a live tail.** While the session is open, run
+   `Monitor(persistent=true, command="tail -F ~/.flow/tasks/<your-slug>/inbox.jsonl", ...)`
+   so new GitHub events for the same PR/issue appear as chat
+   notifications without refreshing Mission Control.
+5. **Review from current GitHub state.** Use `gh pr view`, `gh pr diff`,
+   `gh pr checkout`, or `gh api` as needed before approving, requesting
+   changes, or replying. Inbox events tell you something changed; they
+   are not a substitute for re-reading the latest diff.
+6. **Respect lifecycle events.** A `pr_head_updated` event means new
+   commits landed and the PR should be reviewed again. A `pr_merged`
+   event means the monitor has marked the associated flow task done; do
+   not reopen it unless the user asks for follow-up work.
+
+**Anti-patterns specific to GitHub tasks:**
+
+- **Do not approve on monitor signal alone.** The listener can reopen a
+  review task after new commits, but approval only happens after you have
+  verified the current diff and checks.
+- **Do not create duplicate PR-review tasks manually.** If the existing
+  task has the `gh-pr:<owner>/<repo>#<number>` tag, new review comments
+  and commits belong in that task's inbox.
+- **Do not edit the brief to record new GitHub events.** The brief is
+  the spawn-time snapshot. New GitHub activity arrives through
+  `inbox.jsonl` and durable decisions belong in normal task updates.
+
 ## 11. When in doubt
 
 Ask. The worst outcome is writing a bad brief or silently

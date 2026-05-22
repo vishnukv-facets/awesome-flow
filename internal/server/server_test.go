@@ -65,6 +65,14 @@ func TestTaskAPIUsesFlowDataAndFiles(t *testing.T) {
 	}
 }
 
+func TestNewWiresGitHubListenerWhenDBAvailable(t *testing.T) {
+	root, db := testRootDB(t)
+	srv := New(Config{DB: db, FlowRoot: root, Version: "test"})
+	if srv.githubListener == nil {
+		t.Fatal("github listener was not wired")
+	}
+}
+
 func TestSearchReadsUpdateBodies(t *testing.T) {
 	root, db := testRootDB(t)
 	insertProjectTask(t, db, root)

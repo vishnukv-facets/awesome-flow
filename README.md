@@ -271,6 +271,76 @@ The listener starts automatically when `flow ui serve` runs with the
 above tokens set. Without tokens, the rest of flow works unchanged —
 Slack is opt-in.
 
+## GitHub integration — assigned work and review threads
+
+flow can also poll GitHub through the authenticated `gh` CLI and turn
+assigned issues, assigned/review-requested pull requests, and review
+comments on tracked pull requests into flow work.
+
+```
+                           gh api polling
+                                │
+                                ▼
+   ┌─────────────────────────────────────────────────┐
+   │  monitor.GitHubListener                         │
+   │   • search assigned issues / PRs                 │
+   │   • search PRs requesting your review            │
+   │   • track head changes / merge state for PRs      │
+   │   • fetch review comments for tracked PR tasks   │
+   └────────────────┬────────────────────────────────┘
+                    │  is FLOW_GH_ENABLED=1?
+                    │  is login in FLOW_GH_SELF_LOGINS?
+                    ▼
+   ┌─────────────────────────────────────────────────┐
+   │  GitHubDispatcher                               │
+   │   • find task by gh-pr:<owner>/<repo>#<n>        │
+   │     or gh-issue:<owner>/<repo>#<n>               │
+   │   • create one if absent                        │
+   │   • pick provider from labels: flow:claude       │
+   │                              or flow:codex       │
+   │   • append to inbox · suppress duplicate events  │
+   └─────────────────────────────────────────────────┘
+```
+
+**All repos by default.** Once enabled, GitHub search is not limited to
+the current checkout. Set `FLOW_GH_REPOS=owner/repo,owner/repo2` when
+you want a smaller allowlist.
+
+**One GitHub item, one task.** PR tasks are tagged
+`gh-pr:<owner>/<repo>#<number>` and issue tasks are tagged
+`gh-issue:<owner>/<repo>#<number>`. A later assignment,
+review-request, or review comment for the same PR/issue appends to the
+existing task's `inbox.jsonl` instead of creating a duplicate. GitHub
+event keys are recorded in SQLite so repeated polling does not
+double-append the same event.
+
+**PR review lifecycle.** GitHub search only creates work for open PRs.
+For already-tracked PR tasks, flow also polls the PR detail endpoint:
+a new head SHA appends a "review again" event and reopens the flow task
+if it was already done, while a merged PR appends a merge event and
+marks the associated flow task done. flow does not blindly approve PRs;
+approval remains part of the review task after the reviewer/agent has
+verified the latest diff.
+
+**Provider routing via labels.** Add `flow:codex` to route a new
+GitHub-origin task to Codex, or `flow:claude` to route it to Claude.
+Without either label, flow defaults to Claude.
+
+**Configuration.**
+
+| Env var                 | Purpose                                                                    |
+| ----------------------- | -------------------------------------------------------------------------- |
+| `FLOW_GH_ENABLED`       | `1` to enable GitHub polling; default is off                               |
+| `FLOW_GH_SELF_LOGINS`   | Comma-separated GitHub logins that count as you                            |
+| `FLOW_GH_REPOS`         | Optional repo allowlist; unset means search all repos visible to `gh`      |
+| `FLOW_GH_POLL_INTERVAL` | Poll interval such as `60s`, `2m`, or `120`; default is `1m`               |
+| `FLOW_GH_AUTOOPEN`      | `0` to create tasks without opening a Mission Control terminal immediately |
+
+Run `gh auth login` first, or provide the usual `GH_TOKEN` /
+`GITHUB_TOKEN` environment that `gh api` supports. Without
+`FLOW_GH_ENABLED=1`, the rest of flow works unchanged — GitHub is
+opt-in.
+
 ## Install
 
 In any Claude Code session, paste this:
@@ -581,10 +651,8 @@ flow ships weekly and the surface area keeps growing. A few things
 queued up that we use internally and want to land in the open
 release:
 
-- **First-class GitHub integration** — read issues into flow tasks,
-  link tasks to PRs without the `gh` shell-out, and react to
-  PR-review-comment events the way the Slack listener reacts to
-  emoji.
+- **Deeper GitHub workflows** — outbound replies/comments, webhook
+  mode for low-latency installs, and richer GitHub Projects sync.
 - **More providers, more terminals.** Cursor, Aider, plain shell,
   and Linux + tmux/wezterm are wired-but-not-blessed today.
   Contributors who run those stacks daily can graduate them to

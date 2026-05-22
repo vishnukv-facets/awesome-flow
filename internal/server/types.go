@@ -15,14 +15,15 @@ type Config struct {
 }
 
 type Server struct {
-	cfg           Config
-	terminals     *terminalHub
-	events        *eventHub
-	reconcile     *livenessReconciler
-	transcripts   *transcriptCache
-	caches        *uiCaches
-	slackListener *monitor.SlackListener
-	dbWatcher     *dbWatcher
+	cfg            Config
+	terminals      *terminalHub
+	events         *eventHub
+	reconcile      *livenessReconciler
+	transcripts    *transcriptCache
+	caches         *uiCaches
+	slackListener  *monitor.SlackListener
+	githubListener *monitor.GitHubListener
+	dbWatcher      *dbWatcher
 }
 
 type HealthView struct {

@@ -43,6 +43,9 @@ func New(cfg Config) *Server {
 			s.publishUIChange(kind)
 		})
 		s.slackListener = slackListener
+		s.githubListener = monitor.NewGitHubListener(
+			monitor.NewGitHubDispatcher(cfg.DB, &slackTaskOpener{server: s}),
+		)
 	}
 	return s
 }
@@ -106,6 +109,14 @@ func (s *Server) ListenAndServe(addr string) int {
 			fmt.Fprintf(os.Stderr, "warning: slack listener start: %v\n", err)
 		}
 		defer s.slackListener.Stop()
+	}
+	// Start the GitHub polling listener when explicitly enabled. Like
+	// Slack, Start() is a no-op when env config is incomplete.
+	if s.githubListener != nil {
+		if err := s.githubListener.Start(); err != nil {
+			fmt.Fprintf(os.Stderr, "warning: github listener start: %v\n", err)
+		}
+		defer s.githubListener.Stop()
 	}
 	// One-shot async backfill of tasks.session_path for pre-existing
 	// Codex sessions captured before the column was added. Skipped if

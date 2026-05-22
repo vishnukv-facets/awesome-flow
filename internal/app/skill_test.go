@@ -641,6 +641,25 @@ func TestSkillHasFirstRunCapturePattern(t *testing.T) {
 	}
 }
 
+func TestSkillDocumentsGitHubMonitorBootstrap(t *testing.T) {
+	got := string(embeddedSkill)
+	for _, want := range []string{
+		"GitHub PR and issue tasks",
+		"FLOW_GH_ENABLED=1",
+		"FLOW_GH_SELF_LOGINS",
+		"FLOW_GH_REPOS",
+		"gh-pr:<owner>/<repo>#<number>",
+		"inbox.jsonl",
+		"tail -F ~/.flow/tasks/<your-slug>/inbox.jsonl",
+		"pr_head_updated",
+		"pr_merged",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("skill missing GitHub monitor bootstrap content %q", want)
+		}
+	}
+}
+
 func TestPlaybookRunBootstrapMentionsPersistAdjustments(t *testing.T) {
 	prompt := buildPlaybookRunBootstrapPrompt("p--2026-04-30-10-30", "p", false)
 	for _, want := range []string{
