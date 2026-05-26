@@ -610,10 +610,11 @@ its own, it's the start of a two-or-more-step workflow.
    `--dangerously-skip-permissions` if the user chose skip-permissions;
    for Codex this maps to Codex's
    `--dangerously-bypass-approvals-and-sandbox`. Stored task
-   `permission_mode` is provider-neutral: `default` means prompt on
-   request with sandboxing for Codex, `auto` means no approval prompts
-   while keeping Codex sandboxed, and `bypass` disables both Codex
-   approvals and sandboxing.
+   `permission_mode` is provider-neutral. When a task/session does not
+   explicitly choose a mode, flow uses `auto`: Codex gets no approval
+   prompts while keeping the workspace-write sandbox. Explicit `default`
+   means prompt on request with sandboxing for Codex, and `bypass`
+   disables both Codex approvals and sandboxing.
    Append `--agent codex` only when the user requested Codex or when
    creating/running a task already stored with `session_provider=codex`.
 3. If the command errors with "no task matching", ask the user to clarify

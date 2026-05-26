@@ -364,9 +364,7 @@ func (s *Server) createFlow(req actionRequest) (actionResponse, int) {
 	if provider != "claude" {
 		args = append(args, "--agent", provider)
 	}
-	if permissionMode != "default" {
-		args = append(args, "--permission-mode", permissionMode)
-	}
+	args = append(args, "--permission-mode", permissionMode)
 	if project != "" {
 		args = append(args, "--project", project)
 	}
@@ -1363,9 +1361,9 @@ func (s *Server) prepareOverviewTask(prompt string) error {
 	if errors.Is(err, sql.ErrNoRows) {
 		_, err = s.cfg.DB.Exec(
 			`INSERT INTO tasks (
-				slug, name, status, kind, priority, work_dir, status_changed_at, created_at, updated_at
-			) VALUES (?, ?, 'backlog', 'regular', 'medium', ?, ?, ?, ?)`,
-			overviewTaskSlug, overviewTaskName, absRoot, now, now, now,
+				slug, name, status, kind, priority, work_dir, permission_mode, status_changed_at, created_at, updated_at
+			) VALUES (?, ?, 'backlog', 'regular', 'medium', ?, ?, ?, ?, ?)`,
+			overviewTaskSlug, overviewTaskName, absRoot, flowdb.DefaultPermissionMode, now, now, now,
 		)
 	} else if err == nil {
 		_, err = s.cfg.DB.Exec(
@@ -1378,6 +1376,7 @@ func (s *Server) prepareOverviewTask(prompt string) error {
 				priority = 'medium',
 				work_dir = ?,
 				waiting_on = NULL,
+				permission_mode = ?,
 				session_provider = 'claude',
 				session_id = NULL,
 				session_started = NULL,
@@ -1385,7 +1384,7 @@ func (s *Server) prepareOverviewTask(prompt string) error {
 				status_changed_at = ?,
 				updated_at = ?
 			 WHERE slug = ?`,
-			overviewTaskName, absRoot, now, now, overviewTaskSlug,
+			overviewTaskName, absRoot, flowdb.DefaultPermissionMode, now, now, overviewTaskSlug,
 		)
 	}
 	if err != nil {

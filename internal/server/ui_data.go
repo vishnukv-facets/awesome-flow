@@ -171,17 +171,17 @@ type uiTermLine struct {
 }
 
 type uiBacklogTask struct {
-	Slug       string        `json:"slug"`
-	Name       string        `json:"name"`
-	Project    string        `json:"project"`
-	Parent     *TaskSummary  `json:"parent,omitempty"`
-	Parents    []TaskSummary `json:"parents,omitempty"`
-	Children   []TaskSummary `json:"children,omitempty"`
-	Provider   string        `json:"provider"`
-	Priority   string        `json:"priority"`
-	Due        string        `json:"due,omitempty"`
-	Tags       []string      `json:"tags,omitempty"`
-	WaitingOn  *string       `json:"waiting_on,omitempty"`
+	Slug      string        `json:"slug"`
+	Name      string        `json:"name"`
+	Project   string        `json:"project"`
+	Parent    *TaskSummary  `json:"parent,omitempty"`
+	Parents   []TaskSummary `json:"parents,omitempty"`
+	Children  []TaskSummary `json:"children,omitempty"`
+	Provider  string        `json:"provider"`
+	Priority  string        `json:"priority"`
+	Due       string        `json:"due,omitempty"`
+	Tags      []string      `json:"tags,omitempty"`
+	WaitingOn *string       `json:"waiting_on,omitempty"`
 	// StartedMin is minutes since the task row was created. Lets the UI sort
 	// backlog tasks by age alongside live sessions (uiAgent.StartedMin).
 	StartedMin int `json:"started_min"`
@@ -501,7 +501,7 @@ func (s *Server) uiAgent(tv TaskView, live map[string]bool) uiAgent {
 	}
 	permissionMode := tv.PermissionMode
 	if permissionMode == "" {
-		permissionMode = "default"
+		permissionMode = flowdb.DefaultPermissionMode
 	}
 	sessionID := ""
 	if tv.SessionID != nil {

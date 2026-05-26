@@ -39,7 +39,7 @@ func cmdSpawn(args []string) int {
 	agentFlag := fs.String("agent", "", "session agent: claude or codex")
 	codexAgent := fs.Bool("codex", false, "shortcut for --agent codex")
 	claudeAgent := fs.Bool("claude", false, "shortcut for --agent claude")
-	permission := fs.String("permission-mode", "default", "default|auto|bypass")
+	permission := fs.String("permission-mode", flowdb.DefaultPermissionMode, "default|auto|bypass")
 	dangerSkip := fs.Bool("dangerously-skip-permissions", false, "pass low-friction permissions flag through to the agent")
 	noOpen := fs.Bool("no-open", false, "create the task but don't spawn a session yet")
 	if leadingHelpArg(args) {
@@ -203,4 +203,3 @@ func writeSpawnedBrief(slug, name, prompt, parentSlug string) error {
 		"spawned agent's first turn (see flow skill §9 deferred-section prompt).*\n"
 	return os.WriteFile(briefPath, []byte(body), 0o644)
 }
-

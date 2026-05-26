@@ -1838,7 +1838,7 @@ const ProviderChoiceModal = ({ target, providers, onPick, onClose }) => {
     return availOptions[0]?.id || 'claude';
   })();
   const [provider, setProvider] = useState(initialProvider);
-  const initialMode = (target?.permission_mode === 'auto' || target?.permission_mode === 'bypass') ? target.permission_mode : 'default';
+  const initialMode = (target?.permission_mode === 'bypass') ? target.permission_mode : 'auto';
   const [permissionMode, setPermissionMode] = useState(initialMode);
 
   const PERMISSION_MODES = [

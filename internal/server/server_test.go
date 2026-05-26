@@ -698,7 +698,7 @@ func TestPrepareTerminalLaunchAllocatesBrowserSession(t *testing.T) {
 	if len(launch.Args) != 5 || launch.Args[0] != "--session-id" || launch.Args[1] != launch.SessionID {
 		t.Fatalf("args = %#v", launch.Args)
 	}
-	if launch.Args[2] != "--permission-mode" || launch.Args[3] != "acceptEdits" {
+	if launch.Args[2] != "--permission-mode" || launch.Args[3] != "auto" {
 		t.Fatalf("default permission args = %#v", launch.Args)
 	}
 	if !strings.Contains(launch.Args[4], "flow task build-ui") {
@@ -933,7 +933,7 @@ func TestPrepareTerminalLaunchCodexStartsPendingCapture(t *testing.T) {
 	if !launch.Created || launch.Provider != "codex" || launch.SessionID != "" || !launch.NeedsCapture {
 		t.Fatalf("codex launch = %+v", launch)
 	}
-	wantPrefix := []string{"--no-alt-screen", "-C", workDir, "--add-dir", root, "--ask-for-approval", "on-request", "--sandbox", "workspace-write"}
+	wantPrefix := []string{"--no-alt-screen", "-C", workDir, "--add-dir", root, "--ask-for-approval", "never", "--sandbox", "workspace-write"}
 	if len(launch.Args) < len(wantPrefix)+1 {
 		t.Fatalf("codex args too short: %#v", launch.Args)
 	}
@@ -1006,7 +1006,7 @@ func TestPrepareTerminalLaunchResumesCodexSession(t *testing.T) {
 	if launch.Created || launch.Provider != "codex" || launch.SessionID != sessionID || launch.NeedsCapture {
 		t.Fatalf("codex resume launch = %+v", launch)
 	}
-	want := []string{"resume", "--include-non-interactive", "--no-alt-screen", "-C", workDir, "--add-dir", root, "--ask-for-approval", "on-request", "--sandbox", "workspace-write", sessionID}
+	want := []string{"resume", "--include-non-interactive", "--no-alt-screen", "-C", workDir, "--add-dir", root, "--ask-for-approval", "never", "--sandbox", "workspace-write", sessionID}
 	if strings.Join(launch.Args, "\x00") != strings.Join(want, "\x00") {
 		t.Fatalf("codex resume args = %#v, want %#v", launch.Args, want)
 	}
@@ -1102,6 +1102,55 @@ func TestCreateFlowPersistsPermissionMode(t *testing.T) {
 	}
 	if task.PermissionMode != "auto" {
 		t.Fatalf("permission mode = %q, want auto", task.PermissionMode)
+	}
+}
+
+func TestCreateFlowDefaultsPermissionModeAuto(t *testing.T) {
+	root, db := testRootDB(t)
+	t.Setenv("FLOW_ROOT", root)
+	srv := New(Config{DB: db, FlowRoot: root, CommandPath: testFlowBinary(t)})
+	resp, status := srv.runAction(actionRequest{
+		Kind:     "create-flow",
+		Slug:     "ui-auto-default",
+		Name:     "UI Auto Default",
+		WorkDir:  root,
+		Priority: "medium",
+		Prompt:   "Use implicit permission mode.",
+	})
+	if status != http.StatusOK || !resp.OK {
+		t.Fatalf("status = %d, resp = %+v", status, resp)
+	}
+	task, err := flowdb.GetTask(db, "ui-auto-default")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if task.PermissionMode != "auto" {
+		t.Fatalf("permission mode = %q, want auto", task.PermissionMode)
+	}
+}
+
+func TestCreateFlowPreservesExplicitDefaultPermissionMode(t *testing.T) {
+	root, db := testRootDB(t)
+	t.Setenv("FLOW_ROOT", root)
+	srv := New(Config{DB: db, FlowRoot: root, CommandPath: testFlowBinary(t)})
+	resp, status := srv.runAction(actionRequest{
+		Kind:           "create-flow",
+		Slug:           "ui-explicit-default",
+		Name:           "UI Explicit Default",
+		WorkDir:        root,
+		Priority:       "medium",
+		Prompt:         "Use explicit default permission mode.",
+		PermissionMode: "default",
+	})
+	if status != http.StatusOK || !resp.OK {
+		t.Fatalf("status = %d, resp = %+v", status, resp)
+	}
+	task, err := flowdb.GetTask(db, "ui-explicit-default")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if task.PermissionMode != "default" {
+		t.Fatalf("permission mode = %q, want default", task.PermissionMode)
 	}
 }
 
@@ -1511,7 +1560,7 @@ func TestSpawnRunActionCreatesBrowserBridgeRun(t *testing.T) {
 	if task.Kind != "playbook_run" || !task.PlaybookSlug.Valid || task.PlaybookSlug.String != "tri" {
 		t.Fatalf("not a tri playbook run: %+v", task)
 	}
-	if task.Status != "backlog" || task.SessionID.Valid || task.SessionProvider != "claude" || task.PermissionMode != "default" {
+	if task.Status != "backlog" || task.SessionID.Valid || task.SessionProvider != "claude" || task.PermissionMode != "auto" {
 		t.Fatalf("run should be ready for browser bridge start, got %+v", task)
 	}
 	runBrief, err := os.ReadFile(filepath.Join(root, "tasks", resp.Agent.Slug, "brief.md"))
@@ -1596,7 +1645,7 @@ func TestStaticActionPayloadForwardsProvider(t *testing.T) {
 	if !strings.Contains(body, "Start backlog task") || !strings.Contains(body, "_providerChosen") {
 		t.Fatal("backlog spawn must open the modal asking for provider and permission mode before opening a session")
 	}
-	if !strings.Contains(body, "Permission mode") || !strings.Contains(body, "permission_mode, _providerChosen: true") {
+	if !strings.Contains(body, "Permission mode") || !strings.Contains(body, "permission_mode, _providerChosen: true") || !strings.Contains(body, "? target.permission_mode : 'auto'") {
 		t.Fatal("backlog spawn modal must let the user pick permission mode (default/auto/bypass) and forward it to the spawn action")
 	}
 	if !strings.Contains(body, "data.bridge && data.agent") ||
@@ -1815,7 +1864,7 @@ func TestOverviewTaskUsesFlowRootAndFreshPrompt(t *testing.T) {
 	if len(launch.Args) != 5 || strings.TrimSpace(launch.Args[4]) != "What should I do today?" {
 		t.Fatalf("overview prompt args = %#v", launch.Args)
 	}
-	if launch.Args[2] != "--permission-mode" || launch.Args[3] != "acceptEdits" {
+	if launch.Args[2] != "--permission-mode" || launch.Args[3] != "auto" {
 		t.Fatalf("default permission args = %#v", launch.Args)
 	}
 }
@@ -1857,7 +1906,7 @@ func TestPrepareTerminalLaunchResetsStaleOverviewSession(t *testing.T) {
 	if len(launch.Args) != 5 || strings.TrimSpace(launch.Args[4]) != "Check my inbox" {
 		t.Fatalf("overview prompt args = %#v", launch.Args)
 	}
-	if launch.Args[2] != "--permission-mode" || launch.Args[3] != "acceptEdits" {
+	if launch.Args[2] != "--permission-mode" || launch.Args[3] != "auto" {
 		t.Fatalf("default permission args = %#v", launch.Args)
 	}
 	task, err := flowdb.GetTask(db, overviewTaskSlug)
@@ -1891,7 +1940,7 @@ func TestPrepareTerminalLaunchResumesExistingSession(t *testing.T) {
 	if len(launch.Args) != 4 || launch.Args[0] != "--resume" || launch.Args[1] != sessionID {
 		t.Fatalf("args = %#v", launch.Args)
 	}
-	if launch.Args[2] != "--permission-mode" || launch.Args[3] != "acceptEdits" {
+	if launch.Args[2] != "--permission-mode" || launch.Args[3] != "auto" {
 		t.Fatalf("default permission args on resume = %#v", launch.Args)
 	}
 	task, err := flowdb.GetTask(db, "build-ui")

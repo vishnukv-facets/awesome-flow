@@ -95,13 +95,14 @@ func cmdRunPlaybook(args []string) int {
 		sessionProvider = sessionProviderClaude
 	}
 	_, err = db.Exec(
-		`INSERT INTO tasks (slug, name, project_slug, status, kind, playbook_slug, priority, work_dir, session_provider, status_changed_at, created_at, updated_at)
-		 VALUES (?, ?, ?, 'backlog', 'playbook_run', ?, 'medium', ?, ?, ?, ?, ?)`,
+		`INSERT INTO tasks (slug, name, project_slug, status, kind, playbook_slug, priority, work_dir, permission_mode, session_provider, status_changed_at, created_at, updated_at)
+		 VALUES (?, ?, ?, 'backlog', 'playbook_run', ?, 'medium', ?, ?, ?, ?, ?, ?)`,
 		runSlug,
 		fmt.Sprintf("%s run %s", pb.Slug, runSlug),
 		pb.ProjectSlug,
 		pb.Slug,
 		pb.WorkDir,
+		flowdb.DefaultPermissionMode,
 		sessionProvider,
 		now, now, now,
 	)

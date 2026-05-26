@@ -382,7 +382,7 @@ func cmdDo(args []string) int {
 	prompt := buildBootstrapPromptForKindV2(task.Slug, task.Kind, playbookSlug, isFirstRun)
 	permissionMode := task.PermissionMode
 	if permissionMode == "" {
-		permissionMode = "default"
+		permissionMode = flowdb.DefaultPermissionMode
 	}
 	if *dangerSkip {
 		permissionMode = "bypass"

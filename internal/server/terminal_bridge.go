@@ -405,7 +405,7 @@ func terminalEnvMap(flowRoot, commandPath, hookURL, slug, provider, permissionMo
 func normalizedTerminalPermissionMode(mode string) string {
 	normalized, err := flowdb.NormalizePermissionMode(mode)
 	if err != nil {
-		return "default"
+		return flowdb.DefaultPermissionMode
 	}
 	return normalized
 }

@@ -163,7 +163,9 @@ on the task detail page or directly attached to its live terminal.
 Every task has a single page that shows status, priority, due date,
 tags, agent provider (Claude or Codex), permission mode (default /
 auto / bypass), session id, brief, and append-only updates. Priority
-and permission mode are segmented controls — one click to change.
+and permission mode are segmented controls — one click to change. New
+task sessions default to `auto`; choose `default` when you want the
+provider's prompt-on-request behavior.
 
 ![Task detail with priority and permission editors](docs/ui/02-task-detail.png)
 

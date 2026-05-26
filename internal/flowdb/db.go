@@ -13,6 +13,9 @@ import (
 	_ "modernc.org/sqlite"
 )
 
+// DefaultPermissionMode is used when callers do not explicitly choose one.
+const DefaultPermissionMode = "auto"
+
 // schemaDDL is the full DDL for flow.db. Each statement is idempotent
 // (CREATE ... IF NOT EXISTS) so OpenDB can run this on every startup.
 //
@@ -57,7 +60,7 @@ CREATE TABLE IF NOT EXISTS tasks (
     waiting_on            TEXT,
     due_date              TEXT,
     assignee              TEXT,
-    permission_mode       TEXT NOT NULL DEFAULT 'default' CHECK (permission_mode IN ('default','auto','bypass')),
+    permission_mode       TEXT NOT NULL DEFAULT 'auto' CHECK (permission_mode IN ('default','auto','bypass')),
     status_changed_at     TEXT,
     session_provider      TEXT NOT NULL DEFAULT 'claude' CHECK (session_provider IN ('claude','codex')),
     session_id            TEXT,
@@ -620,7 +623,9 @@ func NullIfEmpty(s string) any {
 // current provider-specific CLI flags.
 func NormalizePermissionMode(mode string) (string, error) {
 	switch strings.TrimSpace(strings.ToLower(mode)) {
-	case "", "default":
+	case "":
+		return DefaultPermissionMode, nil
+	case "default":
 		return "default", nil
 	case "auto":
 		return "auto", nil
@@ -797,7 +802,7 @@ func runMigrations(db *sql.DB) error {
 		return err
 	}
 	if !has {
-		if _, err := db.Exec(`ALTER TABLE tasks ADD COLUMN permission_mode TEXT NOT NULL DEFAULT 'default' CHECK (permission_mode IN ('default','auto','bypass'))`); err != nil {
+		if _, err := db.Exec(`ALTER TABLE tasks ADD COLUMN permission_mode TEXT NOT NULL DEFAULT 'auto' CHECK (permission_mode IN ('default','auto','bypass'))`); err != nil {
 			return fmt.Errorf("add tasks.permission_mode: %w", err)
 		}
 	}
@@ -1253,7 +1258,7 @@ func migrateTasksSessionInvariant(db *sql.DB) error {
 			waiting_on            TEXT,
 			due_date              TEXT,
 			assignee              TEXT,
-			permission_mode       TEXT NOT NULL DEFAULT 'default' CHECK (permission_mode IN ('default','auto','bypass')),
+			permission_mode       TEXT NOT NULL DEFAULT 'auto' CHECK (permission_mode IN ('default','auto','bypass')),
 			status_changed_at     TEXT,
 			session_provider      TEXT NOT NULL DEFAULT 'claude' CHECK (session_provider IN ('claude','codex')),
 			session_id            TEXT,

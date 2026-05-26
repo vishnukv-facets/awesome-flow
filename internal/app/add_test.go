@@ -209,6 +209,23 @@ func TestCmdAddTaskPermissionMode(t *testing.T) {
 	}
 }
 
+func TestCmdAddTaskDefaultsPermissionModeAuto(t *testing.T) {
+	setupFlowRoot(t)
+
+	rc := cmdAdd([]string{"task", "Auto default task"})
+	if rc != 0 {
+		t.Fatalf("rc=%d", rc)
+	}
+	db := openFlowDB(t)
+	task, err := flowdb.GetTask(db, "auto-default-task")
+	if err != nil {
+		t.Fatalf("GetTask: %v", err)
+	}
+	if task.PermissionMode != "auto" {
+		t.Fatalf("permission mode = %q, want auto", task.PermissionMode)
+	}
+}
+
 func TestCmdAddTaskSessionProviderCodex(t *testing.T) {
 	setupFlowRoot(t)
 

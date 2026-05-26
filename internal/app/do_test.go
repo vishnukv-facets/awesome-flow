@@ -640,7 +640,7 @@ func TestCmdDoCodexFreshUsesInteractiveWrapper(t *testing.T) {
 	}
 
 	script := readWrapper(t, getScript())
-	for _, want := range []string{"hook codex-run", "--task", "codex-fresh", "--mode", "fresh", "--permission-mode", "default"} {
+	for _, want := range []string{"hook codex-run", "--task", "codex-fresh", "--mode", "fresh", "--permission-mode", "auto"} {
 		if !strings.Contains(script, want) {
 			t.Fatalf("codex spawn script missing %q:\n%s", want, script)
 		}

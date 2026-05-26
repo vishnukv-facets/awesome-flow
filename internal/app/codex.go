@@ -208,7 +208,7 @@ func cmdHookCodexRun(args []string) int {
 	sessionID := fs.String("session-id", "", "Codex session/thread id for resume")
 	prompt := fs.String("prompt", "", "bootstrap prompt")
 	promptFile := fs.String("prompt-file", "", "path to bootstrap prompt file")
-	permissionModeFlag := fs.String("permission-mode", "default", "agent permission mode: default|auto|bypass")
+	permissionModeFlag := fs.String("permission-mode", flowdb.DefaultPermissionMode, "agent permission mode: default|auto|bypass")
 	dangerSkip := fs.Bool("dangerously-skip-permissions", false, "pass --dangerously-bypass-approvals-and-sandbox to codex")
 	if err := fs.Parse(args); err != nil {
 		return 2

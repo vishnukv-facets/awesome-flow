@@ -150,7 +150,7 @@ func addTask(args []string) int {
 	priority := fs.String("priority", "medium", "high|medium|low")
 	dueFlag := fs.String("due", "", "due date (YYYY-MM-DD, today, tomorrow, monday, 3d)")
 	assigneeFlag := fs.String("assignee", "", "optional assignee (default: self)")
-	permissionModeFlag := fs.String("permission-mode", "default", "agent permission mode: default|auto|bypass")
+	permissionModeFlag := fs.String("permission-mode", flowdb.DefaultPermissionMode, "agent permission mode: default|auto|bypass")
 	agentFlag := fs.String("agent", "", "session agent: claude or codex")
 	codexAgent := fs.Bool("codex", false, "shortcut for --agent codex")
 	claudeAgent := fs.Bool("claude", false, "shortcut for --agent claude")

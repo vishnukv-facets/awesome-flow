@@ -419,8 +419,8 @@ func TestOpenDBOnPreMigrationDB(t *testing.T) {
 	if err := db.QueryRow(`SELECT permission_mode FROM tasks WHERE slug='legacy'`).Scan(&permissionMode); err != nil {
 		t.Fatalf("read legacy row permission mode after migration: %v", err)
 	}
-	if permissionMode != "default" {
-		t.Errorf("legacy row permission mode: got %q, want default", permissionMode)
+	if permissionMode != "auto" {
+		t.Errorf("legacy row permission mode: got %q, want auto", permissionMode)
 	}
 
 	// Verify the new playbooks table is queryable.

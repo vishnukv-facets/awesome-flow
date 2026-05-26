@@ -1783,7 +1783,7 @@ const CreateFlowModal = ({ onClose, projects, action, preselect }) => {
   const [project, setProject] = useState(preselect?.project || '__adhoc');
   const [branch, setBranch] = useState('');
   const [provider, setProvider] = useState(defaultAvailableProvider());
-  const [permissionMode, setPermissionMode] = useState('default');
+  const [permissionMode, setPermissionMode] = useState('auto');
   const [priority, setPriority] = useState('medium');
   const [prompt, setPrompt] = useState('');
   const [workdir, setWorkdir] = useState(preselect?.workDir || WORKDIRS[0]?.path || '');
@@ -1800,7 +1800,7 @@ const CreateFlowModal = ({ onClose, projects, action, preselect }) => {
       bypass: 'Codex bypasses approvals and sandbox',
     }
     : {
-      default: 'Claude default permission prompts',
+      default: 'Claude prompt-on-request permission mode',
       auto: 'Claude auto permission mode',
       bypass: 'Claude dangerously skips permissions',
     };
@@ -2327,9 +2327,9 @@ const SessionDetail = ({ agent, goto, action, gitDiffOpen = false, toggleGitDiff
             Artifacts
             {artifactCountFor(current) > 0 && <span className="mono" style={{marginLeft: 4, opacity: 0.75}}>{artifactCountFor(current)}</span>}
           </button>
-          <div className="seg" title={`Agent permissions (current: ${current.permission_mode || 'default'})`}>
+          <div className="seg" title={`Agent permissions (current: ${current.permission_mode || 'auto'})`}>
             {['default', 'auto', 'bypass'].map(m => {
-              const cur = (current.permission_mode || 'default') === m;
+              const cur = (current.permission_mode || 'auto') === m;
               return (
                 <button
                   key={m}
@@ -4170,7 +4170,7 @@ const TaskDetail = ({ slug, goto, action, refreshKey }) => {
               <span className="mono" style={{fontSize: 11, color: 'var(--text-faint)'}}>permissions:</span>
               <div className="seg" style={{transform: 'scale(0.9)', transformOrigin: 'left center'}}>
                 {['default', 'auto', 'bypass'].map(m => {
-                  const current = (detail.permission_mode || 'default') === m;
+                  const current = (detail.permission_mode || 'auto') === m;
                   return (
                     <button
                       key={m}
