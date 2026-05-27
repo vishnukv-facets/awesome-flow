@@ -786,6 +786,9 @@ select.form-input { appearance: none; background-image: linear-gradient(45deg, t
 .entity-kicker { display: flex; align-items: center; gap: 8px; color: var(--text-faint); font-size: 12px; margin-bottom: 14px; }
 .entity-title-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
 .entity-title-row h1 { margin: 0; color: var(--text); font-size: 30px; line-height: 1.12; letter-spacing: 0; font-weight: 700; }
+.entity-title-editor { display: flex; align-items: center; gap: 6px; flex: 1 1 460px; min-width: min(100%, 320px); max-width: 780px; }
+.entity-title-input { width: 100%; min-width: 0; height: 40px; border: 1px solid var(--border-strong); border-radius: 6px; background: var(--surface-2); color: var(--text); padding: 4px 10px; font-size: 24px; line-height: 1.2; font-weight: 700; outline: none; }
+.entity-title-input:focus { border-color: var(--primary); box-shadow: 0 0 0 2px color-mix(in srgb, var(--primary) 22%, transparent); }
 .entity-subtitle { margin: 10px 0 0; color: var(--text-mid); font-size: 17px; line-height: 1.45; }
 .entity-meta-row { display: flex; gap: 18px; flex-wrap: wrap; margin-top: 14px; color: var(--text-faint); font-size: 12px; }
 .entity-meta-row span { display: inline-flex; align-items: center; gap: 6px; min-width: 0; }
@@ -2290,6 +2293,11 @@ const App = () => {
         .then(() => refreshUIData())
         .catch(err => setToast(err.message));
       return;
+    }
+    if (kind === 'update-task-name') {
+      return serverAction('update-task-name', target)
+        .then(data => refreshUIData().then(() => data))
+        .catch(err => { setToast(err.message); return null; });
     }
     if (kind === 'create-project-open') { setCreateProjectOpen(true); return; }
     if (kind === 'create-project') {

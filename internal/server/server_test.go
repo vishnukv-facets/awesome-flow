@@ -1479,6 +1479,50 @@ func TestUpdatePriorityUnknownSlug(t *testing.T) {
 	}
 }
 
+func TestUpdateTaskNameStoresName(t *testing.T) {
+	root, db := testRootDB(t)
+	insertProjectTask(t, db, root)
+	srv := New(Config{DB: db, FlowRoot: root, CommandPath: "/bin/false"})
+
+	resp, status := srv.runAction(actionRequest{
+		Kind: "update-task-name",
+		Slug: "build-ui",
+		Name: "Build mission control UI",
+	})
+	if status != http.StatusOK || !resp.OK {
+		t.Fatalf("status = %d, resp = %+v", status, resp)
+	}
+	task, err := flowdb.GetTask(db, "build-ui")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if task.Name != "Build mission control UI" {
+		t.Fatalf("task name = %q, want updated name", task.Name)
+	}
+}
+
+func TestUpdateTaskNameRejectsBlankName(t *testing.T) {
+	root, db := testRootDB(t)
+	insertProjectTask(t, db, root)
+	srv := New(Config{DB: db, FlowRoot: root, CommandPath: "/bin/false"})
+
+	resp, status := srv.runAction(actionRequest{
+		Kind: "update-task-name",
+		Slug: "build-ui",
+		Name: "   ",
+	})
+	if status != http.StatusBadRequest || resp.OK {
+		t.Fatalf("status = %d, resp = %+v", status, resp)
+	}
+	task, err := flowdb.GetTask(db, "build-ui")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if task.Name != "Build dashboard UI" {
+		t.Fatalf("task name changed on blank update: %q", task.Name)
+	}
+}
+
 func TestCreateProjectRequiresWorkDir(t *testing.T) {
 	root, db := testRootDB(t)
 	srv := New(Config{DB: db, FlowRoot: root, CommandPath: testFlowBinary(t)})
@@ -1679,6 +1723,9 @@ func TestStaticActionPayloadForwardsProvider(t *testing.T) {
 	if !strings.Contains(body, "if (kind === 'spawn-run')") || !strings.Contains(body, "goto(`session/${data.agent.slug}`)") {
 		t.Fatal("playbook spawn-run must navigate to the created browser terminal run")
 	}
+	if !strings.Contains(body, "if (kind === 'update-task-name')") {
+		t.Fatal("task detail must be able to update the task name from the UI")
+	}
 	tiles, err := staticFS.ReadFile("static/assets/dfbb0627-5c41-4bf8-85df-037b2d384519.js")
 	if err != nil {
 		t.Fatal(err)
@@ -1733,6 +1780,16 @@ func TestStaticActionPayloadForwardsProvider(t *testing.T) {
 	}
 	if !strings.Contains(string(screens), "<th>Dependencies</th>") || strings.Count(string(screens), "DependencyBadges task=") < 3 {
 		t.Fatal("task screens should render dependencies in backlog, table, and project rows")
+	}
+	for _, want := range []string{
+		"const [nameEditing, setNameEditing]",
+		"const [nameDraft, setNameDraft]",
+		"entity-title-input",
+		"action('update-task-name'",
+	} {
+		if !strings.Contains(string(screens), want) {
+			t.Fatalf("task detail name editor missing %q", want)
+		}
 	}
 	if !strings.Contains(string(screens), "const taskStartBlocker") || !strings.Contains(string(screens), "disabled={!anyProviderAvailable() || !!blockReason}") {
 		t.Fatal("task screens should disable spawn controls for blocked/dependent tasks")

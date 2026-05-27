@@ -4054,6 +4054,8 @@ const TaskDetail = ({ slug, goto, action, refreshKey }) => {
   const [detail, setDetail] = useState(null);
   const [brief, setBrief] = useState('');
   const [loadState, setLoadState] = useState({ loading: true, error: '' });
+  const [nameEditing, setNameEditing] = useState(false);
+  const [nameDraft, setNameDraft] = useState('');
 
   useEffect(() => {
     let active = true;
@@ -4065,6 +4067,8 @@ const TaskDetail = ({ slug, goto, action, refreshKey }) => {
       .then(([nextDetail, nextBrief]) => {
         if (!active) return;
         setDetail(nextDetail);
+        setNameDraft(nextDetail.name || '');
+        setNameEditing(false);
         setBrief(nextBrief || '');
         setLoadState({ loading: false, error: '' });
       })
@@ -4097,6 +4101,32 @@ const TaskDetail = ({ slug, goto, action, refreshKey }) => {
   const aux = detail.aux_files || [];
   const tags = detail.tags || [];
   const stale = detail.stale_days && detail.stale_days > 0;
+  const displayName = detail.name || detail.slug;
+  const saveName = () => {
+    const nextName = nameDraft.trim();
+    if (!nextName) return;
+    if (nextName === (detail.name || '').trim()) {
+      setNameDraft(detail.name || '');
+      setNameEditing(false);
+      return;
+    }
+    const result = action('update-task-name', { slug, name: nextName });
+    if (result && typeof result.then === 'function') {
+      result.then(data => {
+        if (!data) return;
+        setDetail(prev => prev ? { ...prev, name: nextName } : prev);
+        setNameDraft(nextName);
+        setNameEditing(false);
+      });
+      return;
+    }
+    setDetail(prev => prev ? { ...prev, name: nextName } : prev);
+    setNameEditing(false);
+  };
+  const cancelNameEdit = () => {
+    setNameDraft(detail.name || '');
+    setNameEditing(false);
+  };
 
   const openSession = () => goto(`session/${slug}`);
   const sessionButton = (() => {
@@ -4120,7 +4150,28 @@ const TaskDetail = ({ slug, goto, action, refreshKey }) => {
         <div className="entity-hero-main">
           <div className="entity-kicker"><button className="btn sm" onClick={() => goto('tasks')}><Icon name="arrow-left" size={11}/>Back</button>{detail.project_slug && <button className="tag-chip" style={{cursor: 'pointer'}} onClick={() => goto(`project/${detail.project_slug}`)} title="Open project">{detail.project_slug}</button>}</div>
           <div className="entity-title-row">
-            <h1>{detail.name || detail.slug}</h1>
+            {nameEditing ? (
+              <div className="entity-title-editor">
+                <input
+                  className="entity-title-input"
+                  value={nameDraft}
+                  onChange={e => setNameDraft(e.target.value)}
+                  onKeyDown={e => {
+                    if (e.key === 'Enter') saveName();
+                    if (e.key === 'Escape') cancelNameEdit();
+                  }}
+                  aria-label="Task name"
+                  autoFocus
+                />
+                <button className="btn sm primary" disabled={!nameDraft.trim()} onClick={saveName} title="Save task name" aria-label="Save task name"><Icon name="save" size={11}/></button>
+                <button className="btn sm" onClick={cancelNameEdit} title="Cancel task name edit" aria-label="Cancel task name edit"><Icon name="x" size={11}/></button>
+              </div>
+            ) : (
+              <>
+                <h1>{displayName}</h1>
+                <button className="btn sm" onClick={() => { setNameDraft(displayName); setNameEditing(true); }} title="Edit task name" aria-label="Edit task name"><Icon name="pencil" size={11}/></button>
+              </>
+            )}
             <StatusPill status={status}/>
             <PriorityPill priority={detail.priority}/>
             {live && <span className="tag-chip" title="Live session" style={{background: 'var(--running)', color: 'var(--bg)'}}>live</span>}
