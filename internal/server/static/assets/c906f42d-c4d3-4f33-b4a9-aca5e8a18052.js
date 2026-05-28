@@ -2877,35 +2877,54 @@ const TaskTerminal = ({ agent, onStatus }) => {
     if (fit) term.loadAddon(fit);
 
     // Defensive scroll guard for copy operations. When the user is
-    // scrolled up reading older session output and finishes a
-    // drag-select (or any path that ends in a clipboard write), the
-    // viewport snaps to the bottom shortly after — likely a side
-    // effect of focus shuffling during navigator.clipboard.writeText
-    // or an internal xterm.js refresh that resets _userScrolling.
-    // Snapshot scrollTop synchronously, then briefly watch for a
-    // single jump-to-bottom and restore. Only restores once, so it
-    // never fights legitimate user scrolling that follows.
-    const guardScrollDuringCopy = () => {
+    // scrolled up reading older session output and starts a
+    // drag-select, the viewport snaps to the bottom — apparently
+    // during the drag itself, before our debounced clipboard write
+    // even runs. Likely xterm.js's SelectionService resetting
+    // _userScrolling on mousedown ("user is interacting, snap to
+    // current content") similar in spirit to scrollOnUserInput but
+    // for mouse input.
+    //
+    // Strategy: snapshot scrollTop on mousedown inside the terminal
+    // and watch the viewport's scroll events through the drag and a
+    // brief post-mouseup window. Restore only if scroll lands at the
+    // absolute bottom, which is the snap signature — drag-extension
+    // auto-scroll moves a line or two at a time and is left alone.
+    let copyGuardCleanup = null;
+    const armCopyScrollGuard = () => {
+      if (copyGuardCleanup) copyGuardCleanup();
       const vp = host.querySelector('.xterm-viewport');
       if (!vp) return;
       const savedTop = vp.scrollTop;
-      const atBottom = savedTop + vp.clientHeight >= vp.scrollHeight - 4;
-      if (atBottom) return;
-      let done = false;
+      const wasAtBottom = savedTop + vp.clientHeight >= vp.scrollHeight - 4;
+      if (wasAtBottom) return;
       const onScroll = () => {
-        if (done) return;
-        if (vp.scrollTop > savedTop + 4) {
+        const nowAtBottom = vp.scrollTop + vp.clientHeight >= vp.scrollHeight - 4;
+        if (nowAtBottom && vp.scrollTop > savedTop + 4) {
           vp.scrollTop = savedTop;
-          done = true;
-          vp.removeEventListener('scroll', onScroll);
         }
       };
       vp.addEventListener('scroll', onScroll);
-      setTimeout(() => {
-        done = true;
+      let disposeTimer = 0;
+      const stop = () => {
+        if (disposeTimer) { clearTimeout(disposeTimer); disposeTimer = 0; }
         vp.removeEventListener('scroll', onScroll);
-      }, 500);
+        window.removeEventListener('mouseup', onMouseUp, true);
+        copyGuardCleanup = null;
+      };
+      const onMouseUp = () => {
+        // Keep the guard alive briefly after mouseup so the post-drag
+        // clipboard write / OSC 52 / toast path is still covered.
+        disposeTimer = setTimeout(stop, 400);
+      };
+      window.addEventListener('mouseup', onMouseUp, true);
+      copyGuardCleanup = stop;
     };
+    const onHostMouseDown = (e) => {
+      if (e.button !== 0 && e.button !== 2) return;
+      armCopyScrollGuard();
+    };
+    host.addEventListener('mousedown', onHostMouseDown, true);
 
     // OSC 52 → browser clipboard. flow runs sessions inside tmux with
     // mouse-mode on, so drag-selection never surfaces as a DOM selection;
@@ -2926,7 +2945,6 @@ const TaskTerminal = ({ agent, onStatus }) => {
           let text;
           try { text = atob(payload); } catch (_) { return false; }
           if (!text) return true;
-          guardScrollDuringCopy();
           navigator.clipboard.writeText(text).then(() => {
             window.dispatchEvent(new CustomEvent('flow:toast', { detail: { message: 'copied to clipboard' } }));
           }).catch(() => {
@@ -3128,7 +3146,6 @@ const TaskTerminal = ({ agent, onStatus }) => {
       const text = termRef.current.getSelection();
       if (!text || !text.trim()) return;
       if (!navigator.clipboard || !navigator.clipboard.writeText) return;
-      guardScrollDuringCopy();
       navigator.clipboard.writeText(text).then(() => {
         window.dispatchEvent(new CustomEvent('flow:toast', { detail: { message: 'copied to clipboard' } }));
       }).catch(() => {
@@ -3148,6 +3165,8 @@ const TaskTerminal = ({ agent, onStatus }) => {
       host.removeEventListener('paste', pasteHandler, true);
       host.removeEventListener('dragover', dragOverHandler);
       host.removeEventListener('drop', dropHandler);
+      host.removeEventListener('mousedown', onHostMouseDown, true);
+      if (copyGuardCleanup) copyGuardCleanup();
       observer.disconnect();
       window.removeEventListener('resize', resize);
       dataDisposable.dispose();
