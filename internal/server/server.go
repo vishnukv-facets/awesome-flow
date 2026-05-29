@@ -30,6 +30,9 @@ func New(cfg Config) *Server {
 	s.caches = newUICaches()
 	s.dbWatcher = newDBWatcher(s)
 	s.inboxMonitors = newInboxMonitorManager(inboxWakeTarget{terminals: s.terminals})
+	// Resolves Slack user/channel IDs to display names for the Inbox UI.
+	// Nil when no Slack token is configured; all uses are nil-safe.
+	s.nameResolver = monitor.NewSlackNameResolver()
 	// Slack Socket Mode listener: only constructed when a DB is available
 	// (the dispatcher needs one). Start()/Stop() are no-ops when the env
 	// isn't configured for Socket Mode, so wiring is safe to leave in
@@ -65,6 +68,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/tasks", s.handleTasks)
 	mux.HandleFunc("/api/tasks/", s.handleTaskRoute)
 	mux.HandleFunc("/api/inbox", s.handleInbox)
+	mux.HandleFunc("/api/inbox/conversation", s.handleInboxConversation)
 	mux.HandleFunc("/api/projects", s.handleProjects)
 	mux.HandleFunc("/api/projects/", s.handleProjectRoute)
 	mux.HandleFunc("/api/playbooks", s.handlePlaybooks)

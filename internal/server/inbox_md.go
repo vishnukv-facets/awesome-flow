@@ -2,8 +2,12 @@ package server
 
 import (
 	"bufio"
+	"context"
+	"errors"
+	"fmt"
 	"net/http"
 	"os"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
@@ -11,6 +15,60 @@ import (
 	"flow/internal/flowdb"
 	"flow/internal/monitor"
 )
+
+// slackIDTokenRe matches a bare Slack id token (optionally @/# prefixed). A
+// real id is an uppercase type letter — U/W (user), C/G/D (channel) — followed
+// by 8–10 uppercase-alnum chars. The digit requirement (checked separately)
+// keeps ordinary all-caps words like "UPDATED" from matching.
+var slackIDTokenRe = regexp.MustCompile(`([@#]?)([UWCDG][A-Z0-9]{8,10})`)
+
+func containsDigit(s string) bool {
+	for _, r := range s {
+		if r >= '0' && r <= '9' {
+			return true
+		}
+	}
+	return false
+}
+
+// scrubSlackIDs swaps bare Slack user/channel ids embedded in a string —
+// typically a task name generated before name resolution existed (e.g. a DM
+// task literally named "U01RKJ5J9EK", or "#chan - @U03… msg") — for resolved
+// display names, so no raw id ever reaches the UI. Unresolvable ids degrade to
+// a neutral label rather than leak. Cheap for the common case: the regex only
+// matches id-shaped tokens, and resolution is cached.
+func (s *Server) scrubSlackIDs(ctx context.Context, text string) string {
+	if text == "" {
+		return text
+	}
+	return slackIDTokenRe.ReplaceAllStringFunc(text, func(match string) string {
+		sub := slackIDTokenRe.FindStringSubmatch(match)
+		if len(sub) < 3 {
+			return match
+		}
+		prefix, id := sub[1], sub[2]
+		if !containsDigit(id) {
+			return match // an ordinary uppercase word, not an id
+		}
+		switch id[0] {
+		case 'U', 'W':
+			name := s.nameResolver.UserName(ctx, id)
+			if name == "" {
+				name = "unknown"
+			}
+			if prefix == "@" {
+				return "@" + name
+			}
+			return name
+		case 'C', 'G', 'D':
+			if name := s.nameResolver.ChannelName(ctx, id); name != "" {
+				return name // already #-prefixed
+			}
+			return "channel"
+		}
+		return match
+	})
+}
 
 // readInboxEntries parses ~/.flow/tasks/<slug>/inbox.md into structured
 // entries. The format is the one `flow tell <slug>` writes — `## TIMESTAMP
@@ -210,6 +268,8 @@ func (s *Server) handleInbox(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err, http.StatusInternalServerError)
 		return
 	}
+	ctx := r.Context()
+	live, _ := s.cachedLiveAgentSessions()
 	entries := make([]InboxFeedEntry, 0, 64)
 	unread := 0
 	taskCount := 0
@@ -218,6 +278,8 @@ func (s *Server) handleInbox(w http.ResponseWriter, r *http.Request) {
 		if jerr != nil || len(jsonlEntries) == 0 {
 			continue
 		}
+		taskLive := t.SessionID.Valid && t.SessionID.String != "" && live[strings.ToLower(t.SessionID.String)]
+		taskName := s.scrubSlackIDs(ctx, t.Name)
 		var project *string
 		if t.ProjectSlug.Valid && t.ProjectSlug.String != "" {
 			ps := t.ProjectSlug.String
@@ -259,7 +321,7 @@ func (s *Server) handleInbox(w http.ResponseWriter, r *http.Request) {
 			body := inboxJSONLEntryBody(je.Event)
 			entries = append(entries, InboxFeedEntry{
 				TaskSlug:    t.Slug,
-				TaskName:    t.Name,
+				TaskName:    taskName,
 				ProjectSlug: project,
 				Status:      t.Status,
 				Timestamp:   ts,
@@ -267,6 +329,8 @@ func (s *Server) handleInbox(w http.ResponseWriter, r *http.Request) {
 				Body:        body,
 				BodySnippet: inboxFeedBodySnippet(body),
 				Unread:      isUnread,
+				Source:      inboxEntrySource(je),
+				Live:        taskLive,
 			})
 		}
 	}
@@ -279,4 +343,164 @@ func (s *Server) handleInbox(w http.ResponseWriter, r *http.Request) {
 		TaskCount:   taskCount,
 		GeneratedAt: time.Now().UTC().Format(time.RFC3339),
 	})
+}
+
+// inboxEntrySource returns "slack" | "github" | "" for one stored event,
+// preferring the persisted meta and falling back to live classification.
+func inboxEntrySource(je monitor.InboxEntry) string {
+	src := strings.TrimSpace(je.Meta.Source)
+	if src == "" || src == "unknown" {
+		src = monitor.ClassifyInboxEvent(je.Event).Source
+	}
+	if src == "unknown" {
+		return ""
+	}
+	return src
+}
+
+// handleInboxConversation returns one task's full inbox thread, oldest first,
+// with every Slack user/channel ID resolved to a display name. This is the
+// lazy, per-conversation companion to /api/inbox: name resolution only runs
+// for the conversation the user actually opens.
+func (s *Server) handleInboxConversation(w http.ResponseWriter, r *http.Request) {
+	if !getOnly(w, r) {
+		return
+	}
+	slug := strings.TrimSpace(r.URL.Query().Get("slug"))
+	if slug == "" {
+		writeError(w, errors.New("slug query parameter is required"), http.StatusBadRequest)
+		return
+	}
+	task, err := flowdb.GetTask(s.cfg.DB, slug)
+	if err != nil {
+		writeNotFoundOrError(w, err)
+		return
+	}
+
+	live, _ := s.cachedLiveAgentSessions()
+	taskLive := task.SessionID.Valid && task.SessionID.String != "" && live[strings.ToLower(task.SessionID.String)]
+	provider := task.SessionProvider
+	if provider == "" {
+		provider = "claude"
+	}
+	var project *string
+	if task.ProjectSlug.Valid && task.ProjectSlug.String != "" {
+		ps := task.ProjectSlug.String
+		project = &ps
+	}
+
+	ctx := r.Context()
+	jsonlEntries, _ := monitor.ReadInboxEntries(task.Slug)
+	messages := make([]InboxConversationMessage, 0, len(jsonlEntries))
+	sources := map[string]bool{}
+	channelName := ""
+	for _, je := range jsonlEntries {
+		msg := s.inboxConversationMessage(ctx, je)
+		messages = append(messages, msg)
+		if msg.Source != "" {
+			sources[msg.Source] = true
+		}
+		if channelName == "" && msg.Source == "slack" {
+			channelName = s.nameResolver.ChannelName(ctx, je.Event.Channel)
+		}
+	}
+	sort.SliceStable(messages, func(i, j int) bool {
+		return inboxFeedTimestampSortKey(messages[i].Timestamp) < inboxFeedTimestampSortKey(messages[j].Timestamp)
+	})
+
+	source := ""
+	switch len(sources) {
+	case 1:
+		for k := range sources {
+			source = k
+		}
+	default:
+		if len(sources) > 1 {
+			source = "mixed"
+		}
+	}
+
+	writeJSON(w, InboxConversation{
+		Slug:        task.Slug,
+		Name:        s.scrubSlackIDs(ctx, task.Name),
+		ProjectSlug: project,
+		Status:      task.Status,
+		Provider:    provider,
+		Live:        taskLive,
+		Source:      source,
+		ChannelName: channelName,
+		Messages:    messages,
+	})
+}
+
+// inboxConversationMessage renders one stored event into a thread message,
+// resolving Slack IDs to names. Never emits a raw ID in SenderName or Body.
+func (s *Server) inboxConversationMessage(ctx context.Context, je monitor.InboxEntry) InboxConversationMessage {
+	ev := je.Event
+	source := inboxEntrySource(je)
+	ts := strings.TrimSpace(je.EnqueuedAt)
+	if ts == "" {
+		ts = strings.TrimSpace(ev.TS)
+	}
+	return InboxConversationMessage{
+		Source:     source,
+		Kind:       ev.Kind,
+		SenderName: s.inboxSenderName(ctx, ev, source),
+		Timestamp:  ts,
+		Title:      inboxJSONLTitle(ev),
+		Body:       s.inboxMessageBody(ctx, ev, source),
+		Permalink:  inboxPermalink(ev, source),
+		Reaction:   ev.Reaction,
+	}
+}
+
+// inboxSenderName resolves the human name of an event's author. Slack ids go
+// through the cached resolver (never returned raw); GitHub senders are already
+// logins. Falls back to "unknown" rather than leak an id.
+func (s *Server) inboxSenderName(ctx context.Context, ev monitor.InboundEvent, source string) string {
+	if source == "slack" {
+		if name := s.nameResolver.UserName(ctx, ev.UserID); name != "" {
+			return name
+		}
+		if name := s.nameResolver.UserName(ctx, ev.ItemAuthor); name != "" {
+			return name
+		}
+		return "unknown"
+	}
+	// GitHub (and any other source) carries human-readable logins / labels.
+	if sender := inboxJSONLSender(ev); sender != "" {
+		return sender
+	}
+	return "unknown"
+}
+
+// inboxMessageBody returns the message text with Slack markup (mentions,
+// links) cleaned so no raw ids surface. GitHub bodies pass through unchanged.
+func (s *Server) inboxMessageBody(ctx context.Context, ev monitor.InboundEvent, source string) string {
+	text := strings.TrimSpace(ev.Text)
+	if text == "" {
+		return ""
+	}
+	if source == "slack" {
+		return s.nameResolver.CleanText(ctx, text)
+	}
+	return text
+}
+
+// inboxPermalink returns a best-effort deep link to the source message:
+// the event's own URL when present (always set for GitHub), else a Slack
+// app deep link built from team/channel/ts. Empty when nothing is derivable.
+func inboxPermalink(ev monitor.InboundEvent, source string) string {
+	if u := strings.TrimSpace(ev.URL); u != "" {
+		return u
+	}
+	if source == "slack" {
+		team := strings.TrimSpace(ev.TeamID)
+		channel := strings.TrimSpace(ev.Channel)
+		ts := strings.TrimSpace(ev.TS)
+		if team != "" && channel != "" && ts != "" {
+			return fmt.Sprintf("slack://channel?team=%s&id=%s&message=%s", team, channel, ts)
+		}
+	}
+	return ""
 }

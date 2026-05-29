@@ -1026,45 +1026,125 @@ const formatInboxTimeAgo = (ts) => {
   return `${Math.floor(sec / 86400)}d ago`;
 };
 
-// Single inbox row. Linked to the task it belongs to (clicking opens the
-// task detail). Unread items get a subtle accent rail.
-const InboxFeedRow = ({ entry, goto }) => {
-  const open = () => goto && goto(`task/${entry.task_slug}`);
+// ───────── Inbox (conversation view) ─────────────────────────────────────
+// Source marks for Slack / GitHub origin. SVGs ship in /assets; rendering them
+// inline lets every row and message show where it came from without a text
+// label (and without ever printing a raw channel/user id).
+const INBOX_SOURCE_MARKS = { slack: '/assets/slack-mark.svg', github: '/assets/github-mark.svg' };
+const SourceMark = ({ source, size = 13, title }) => {
+  const src = INBOX_SOURCE_MARKS[source];
+  if (!src) return null;
+  return <img className="inbox-source-mark" src={src} alt={source} title={title || source} width={size} height={size}/>;
+};
+
+// One conversation in the left list. A conversation is every inbox event for a
+// single task (which, for a Slack-origin task, is one thread). Shows the human
+// task name — never the slug or any id — plus source, message count, latest
+// activity, an unread badge, and a live-session dot.
+const InboxConvRow = ({ conv, selected, onSelect }) => (
+  <button
+    type="button"
+    className={`inbox-conv${selected ? ' is-selected' : ''}${conv.unreadCount ? ' is-unread' : ''}`}
+    onClick={() => onSelect(conv.slug)}
+  >
+    <span className="inbox-conv-rail">
+      {conv.live
+        ? <span className="inbox-live-dot" title="Session live"/>
+        : conv.unreadCount ? <span className="inbox-unread-dot" title="Unread"/> : null}
+    </span>
+    <span className="inbox-conv-main">
+      <span className="inbox-conv-top">
+        {conv.sources.map(s => <SourceMark key={s} source={s} size={12}/>)}
+        <span className="inbox-conv-name">{conv.name}</span>
+      </span>
+      <span className="inbox-conv-sub mono">
+        {conv.project_slug && <span className="inbox-conv-project">{conv.project_slug}</span>}
+        <span>{conv.count} msg{conv.count === 1 ? '' : 's'}</span>
+        <span className="inbox-conv-dot">·</span>
+        <span title={conv.latestTs}>{formatInboxTimeAgo(conv.latestTs)}</span>
+      </span>
+    </span>
+    {conv.unreadCount > 0 && <span className="inbox-conv-badge">{conv.unreadCount}</span>}
+  </button>
+);
+
+// One message in the thread (right pane). sender_name and body are already
+// id-free — resolved server-side via the Slack name resolver.
+const InboxMessage = ({ msg }) => {
+  const isEvent = msg.source === 'github' || (msg.kind && msg.kind !== 'message' && msg.kind !== 'app_mention');
+  const body = msg.body || msg.title;
   return (
-    <article
-      className="inbox-item"
-      onClick={open}
-      style={{
-        cursor: 'pointer',
-        borderLeft: entry.unread ? '3px solid var(--accent)' : '3px solid transparent',
-      }}
-    >
-      <div className="inbox-item-rail">
-        <span className="inbox-outcome" title={entry.unread ? 'Unread' : 'Read'}>
-          <Icon name={entry.unread ? 'inbox' : 'check'} size={14}/>
-        </span>
-      </div>
-      <div className="inbox-item-main">
-        <div className="inbox-item-top">
-          <span className="inbox-source mono"><Icon name="hash" size={11}/>{entry.task_slug}</span>
-          {entry.project_slug && <span className="inbox-kind mono">{entry.project_slug}</span>}
-          <span className="inbox-kind mono">from: {entry.sender || 'unknown'}</span>
-          <span className="inbox-time mono" title={entry.timestamp}>{formatInboxTimeAgo(entry.timestamp)}</span>
-          {entry.unread && <span className="pill waiting">unread</span>}
-        </div>
-        <h3 style={{margin: '4px 0 4px'}}>{entry.task_name}</h3>
-        {entry.body_snippet && (
-          <div className="mono" style={{fontSize: 12, color: 'var(--text-dim)', whiteSpace: 'pre-wrap', lineHeight: 1.45}}>
-            {entry.body_snippet}
-          </div>
+    <article className={`inbox-msg inbox-msg--${msg.source || 'other'}`}>
+      <div className="inbox-msg-head">
+        <SourceMark source={msg.source} size={13}/>
+        <span className="inbox-msg-sender">{msg.sender_name || 'unknown'}</span>
+        <span className="inbox-msg-time mono" title={msg.timestamp}>{formatInboxTimeAgo(msg.timestamp)}</span>
+        {msg.permalink && (
+          <a className="inbox-msg-link mono" href={msg.permalink} target="_blank" rel="noopener noreferrer" title={`Open in ${msg.source}`}>
+            <Icon name="external-link" size={11}/>open in {msg.source}
+          </a>
         )}
       </div>
-      <div className="inbox-actions">
-        <button className="btn sm primary" onClick={(e) => { e.stopPropagation(); open(); }}>
-          <Icon name="arrow-right" size={11}/>Open task
-        </button>
-      </div>
+      {isEvent && msg.title && <div className="inbox-msg-kind mono">{msg.title}</div>}
+      {body && <div className="inbox-msg-body"><MarkdownView source={body} empty=""/></div>}
     </article>
+  );
+};
+
+// Right pane: the selected conversation's full thread plus the live-aware
+// action button (Open terminal when a session is running, else Spawn agent).
+// Mirrors the SessionDetail sessionButton logic so behaviour matches the rest
+// of the app.
+const InboxConversationPane = ({ conv, loading, error, action, goto, onBack }) => {
+  if (!conv && loading) return <div className="inbox-detail-empty mono">Loading conversation…</div>;
+  if (!conv && error) return <div className="inbox-detail-empty mono" style={{color: 'rgba(255,120,120,0.95)'}}>Failed to load: {error}</div>;
+  if (!conv) {
+    return (
+      <div className="inbox-detail-empty">
+        <BrandEmpty compact title="Select a conversation" body="Pick a thread on the left to read its Slack or GitHub messages here."/>
+      </div>
+    );
+  }
+  const provider = conv.provider || 'claude';
+  const messages = conv.messages || [];
+  const actionBtn = (() => {
+    if (conv.live) {
+      return <button className="btn sm primary" onClick={() => action('attach', { slug: conv.slug, hasAgent: true, provider })}><Icon name="external-link" size={11}/>Open terminal</button>;
+    }
+    if (conv.status === 'backlog') {
+      const blocked = !anyProviderAvailable();
+      return <button className="btn sm green" disabled={blocked} title={blocked ? 'No supported agent binary found on PATH' : 'Spawn a fresh session for this task'} onClick={() => action('spawn', { slug: conv.slug, provider })}><Icon name="play" size={11}/>Spawn agent</button>;
+    }
+    if (conv.status === 'done') {
+      return <button className="btn sm" onClick={() => goto(`session/${conv.slug}`)}><Icon name="terminal" size={11}/>View transcript</button>;
+    }
+    return <button className="btn sm" onClick={() => goto(`session/${conv.slug}`)}><Icon name="terminal" size={11}/>Open session</button>;
+  })();
+  return (
+    <div className="inbox-detail">
+      <div className="inbox-detail-head">
+        <button className="btn sm inbox-back" onClick={onBack} title="Back to list"><Icon name="arrow-left" size={11}/>back</button>
+        <div className="inbox-detail-title">
+          <h2>{conv.name}</h2>
+          <div className="inbox-detail-meta mono">
+            {conv.source && conv.source !== 'mixed' && <SourceMark source={conv.source} size={12}/>}
+            {conv.channel_name && <span>{conv.channel_name}</span>}
+            {conv.project_slug && <span className="inbox-conv-project inbox-conv-project--link" onClick={() => goto(`project/${conv.project_slug}`)} title="Open project">{conv.project_slug}</span>}
+            <span>{messages.length} message{messages.length === 1 ? '' : 's'}</span>
+            {conv.live && <span className="inbox-live-pill"><span className="inbox-live-dot"/>live</span>}
+          </div>
+        </div>
+        <div className="inbox-detail-actions">
+          <button className="btn sm" onClick={() => goto(`task/${conv.slug}`)} title="Open task detail"><Icon name="arrow-right" size={11}/>task</button>
+          {actionBtn}
+        </div>
+      </div>
+      <div className="inbox-thread">
+        {messages.length === 0
+          ? <div className="inbox-detail-empty mono">No messages in this conversation yet.</div>
+          : messages.map((m, i) => <InboxMessage key={`${m.timestamp}-${i}`} msg={m}/>)}
+      </div>
+    </div>
   );
 };
 
@@ -1074,9 +1154,20 @@ const InboxView = ({ action, goto }) => {
   const [loadError, setLoadError] = useState('');
   const [reloadTick, setReloadTick] = useState(0);
 
-  // Fetch + refresh on /api/inbox. /api/events SSE doesn't yet emit inbox
-  // mutations, so we re-pull on a 15s backstop. Cheap (one file stat per
-  // task), and the user can hit "refresh" for an immediate pull.
+  const [selectedSlug, setSelectedSlug] = useState(null);
+  const [convCache, setConvCache] = useState({});
+  const [convLoading, setConvLoading] = useState(false);
+  const [convError, setConvError] = useState('');
+
+  const [projectSel, setProjectSel] = useState('all');
+  const [unreadOnly, setUnreadOnly] = useState(false);
+  const [recent, setRecent] = useState('all');
+  const [search, setSearch] = useState('');
+  const [sortDir, setSortDir] = useState('desc');
+  const [collapsed, setCollapsed] = useState(loadInboxCollapsed);
+
+  // Fetch the global feed. /api/events SSE doesn't emit inbox mutations yet,
+  // so we re-pull on a 15s backstop (one file stat per task — cheap).
   useEffect(() => {
     let cancelled = false;
     const load = async () => {
@@ -1093,8 +1184,7 @@ const InboxView = ({ action, goto }) => {
         });
         setLoadError('');
       } catch (err) {
-        if (cancelled) return;
-        setLoadError(err && err.message ? err.message : 'failed to load inbox');
+        if (!cancelled) setLoadError(err && err.message ? err.message : 'failed to load inbox');
       } finally {
         if (!cancelled) setLoading(false);
       }
@@ -1106,107 +1196,120 @@ const InboxView = ({ action, goto }) => {
 
   const items = feed.entries;
 
-  // Derived option lists power the senders / projects / tasks filters.
-  const allSenders = useMemo(() => {
-    const s = new Set();
-    items.forEach(i => { if (i.sender) s.add(i.sender); });
-    return Array.from(s).sort();
+  // Group the flat feed into conversations keyed by task — one row per task.
+  const conversations = useMemo(() => {
+    const map = new Map();
+    items.forEach(it => {
+      let c = map.get(it.task_slug);
+      if (!c) {
+        c = { slug: it.task_slug, name: it.task_name || it.task_slug, project_slug: it.project_slug || null, status: it.status, live: !!it.live, count: 0, unreadCount: 0, latestTs: '', sourceSet: new Set(), bodies: [] };
+        map.set(it.task_slug, c);
+      }
+      c.count += 1;
+      if (it.unread) c.unreadCount += 1;
+      if (it.live) c.live = true;
+      if (it.source) c.sourceSet.add(it.source);
+      if (it.body) c.bodies.push(it.body);
+      const t = parseInboxTimestamp(it.timestamp);
+      const cur = parseInboxTimestamp(c.latestTs);
+      if (!Number.isFinite(cur) || (Number.isFinite(t) && t > cur)) c.latestTs = it.timestamp;
+    });
+    return Array.from(map.values()).map(c => ({ ...c, sources: Array.from(c.sourceSet).sort() }));
   }, [items]);
+
   const allProjects = useMemo(() => {
     const s = new Set();
-    items.forEach(i => { if (i.project_slug) s.add(i.project_slug); });
+    conversations.forEach(c => { if (c.project_slug) s.add(c.project_slug); });
     return Array.from(s).sort();
-  }, [items]);
-  const allTasks = useMemo(() => {
-    const map = new Map();
-    items.forEach(i => { if (i.task_slug) map.set(i.task_slug, i.task_name || i.task_slug); });
-    return Array.from(map.entries()).sort((a, b) => a[0].localeCompare(b[0]));
-  }, [items]);
-
-  const [senderSel, setSenderSel] = useState(new Set());
-  const [projectSel, setProjectSel] = useState('all');
-  const [taskSel, setTaskSel] = useState('all');
-  const [unreadOnly, setUnreadOnly] = useState(false);
-  const [recent, setRecent] = useState('all');
-  const [search, setSearch] = useState('');
-  const [sortDir, setSortDir] = useState('desc');
-  const [pageSize, setPageSize] = useState(50);
-  const [page, setPage] = useState(1);
-  const [collapsed, setCollapsed] = useState(loadInboxCollapsed);
-
-  useEffect(() => { setPage(1); }, [senderSel, projectSel, taskSel, unreadOnly, recent, search, sortDir, pageSize]);
-
-  const toggleSender = (s) => setSenderSel(prev => {
-    const n = new Set(prev); n.has(s) ? n.delete(s) : n.add(s); return n;
-  });
-  const toggleCollapsed = (key) => setCollapsed(prev => {
-    const n = new Set(prev); n.has(key) ? n.delete(key) : n.add(key); saveInboxCollapsed(n); return n;
-  });
-  const expandAllBuckets = () => setCollapsed(() => { saveInboxCollapsed(new Set()); return new Set(); });
-  const collapseAllBuckets = () => {
-    const all = new Set(INBOX_BUCKETS.map(b => b.id));
-    setCollapsed(() => { saveInboxCollapsed(all); return all; });
-  };
+  }, [conversations]);
 
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
-    const recentMin = recent === '24h' ? 24*60 : recent === '7d' ? 7*24*60 : recent === '30d' ? 30*24*60 : null;
+    const recentMin = recent === '24h' ? 24 * 60 : recent === '7d' ? 7 * 24 * 60 : recent === '30d' ? 30 * 24 * 60 : null;
     const now = Date.now();
-    const out = items.filter(item => {
-      if (unreadOnly && !item.unread) return false;
-      if (senderSel.size > 0 && !senderSel.has(item.sender)) return false;
+    const out = conversations.filter(c => {
+      if (unreadOnly && !c.unreadCount) return false;
       if (projectSel !== 'all') {
-        if (projectSel === '__floating') { if (item.project_slug) return false; }
-        else if (item.project_slug !== projectSel) return false;
+        if (projectSel === '__floating') { if (c.project_slug) return false; }
+        else if (c.project_slug !== projectSel) return false;
       }
-      if (taskSel !== 'all' && item.task_slug !== taskSel) return false;
       if (recentMin != null) {
-        const t = parseInboxTimestamp(item.timestamp);
-        if (!Number.isFinite(t)) return false;
-        if ((now - t) / 60000 > recentMin) return false;
+        const t = parseInboxTimestamp(c.latestTs);
+        if (!Number.isFinite(t) || (now - t) / 60000 > recentMin) return false;
       }
       if (q) {
-        const hay = [item.task_slug, item.task_name, item.project_slug, item.sender, item.body, item.body_snippet, item.status]
-          .filter(Boolean).join(' ').toLowerCase();
+        const hay = [c.slug, c.name, c.project_slug].concat(c.bodies || []).filter(Boolean).join(' ').toLowerCase();
         if (!hay.includes(q)) return false;
       }
       return true;
     });
     out.sort((a, b) => {
-      const av = parseInboxTimestamp(a.timestamp);
-      const bv = parseInboxTimestamp(b.timestamp);
+      const av = parseInboxTimestamp(a.latestTs);
+      const bv = parseInboxTimestamp(b.latestTs);
       const aa = Number.isFinite(av) ? av : 0;
       const bb = Number.isFinite(bv) ? bv : 0;
       return sortDir === 'desc' ? bb - aa : aa - bb;
     });
     return out;
-  }, [items, senderSel, projectSel, taskSel, unreadOnly, recent, search, sortDir]);
+  }, [conversations, unreadOnly, projectSel, recent, search, sortDir]);
 
-  const totalPages = Math.max(1, Math.ceil(filtered.length / pageSize));
-  const safePage = Math.min(page, totalPages);
-  const pageStart = (safePage - 1) * pageSize;
-  const pageEnd = Math.min(pageStart + pageSize, filtered.length);
-  const visible = filtered.slice(pageStart, pageEnd);
+  const isNarrow = () => typeof window !== 'undefined' && window.matchMedia && window.matchMedia('(max-width: 860px)').matches;
+
+  // Keep a valid selection on desktop: auto-open the first conversation and
+  // re-point if the selected one filters out. On mobile we leave the list
+  // visible until the user taps a row.
+  useEffect(() => {
+    if (selectedSlug && filtered.some(c => c.slug === selectedSlug)) return;
+    if (!filtered.length) { setSelectedSlug(null); return; }
+    if (isNarrow()) return;
+    setSelectedSlug(filtered[0].slug);
+  }, [filtered, selectedSlug]);
+
+  // Fetch the open conversation's thread; refetch silently on each feed tick.
+  useEffect(() => {
+    if (!selectedSlug) return;
+    let cancelled = false;
+    setConvError('');
+    if (!convCache[selectedSlug]) setConvLoading(true);
+    (async () => {
+      try {
+        const resp = await fetch(`/api/inbox/conversation?slug=${encodeURIComponent(selectedSlug)}`, { cache: 'no-store' });
+        if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+        const data = await resp.json();
+        if (cancelled) return;
+        setConvCache(prev => ({ ...prev, [selectedSlug]: data }));
+      } catch (err) {
+        if (!cancelled) setConvError(err && err.message ? err.message : 'failed to load conversation');
+      } finally {
+        if (!cancelled) setConvLoading(false);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [selectedSlug, reloadTick]);
+
+  const toggleCollapsed = (key) => setCollapsed(prev => {
+    const n = new Set(prev); n.has(key) ? n.delete(key) : n.add(key); saveInboxCollapsed(n); return n;
+  });
 
   const buckets = useMemo(() => {
     const now = new Date();
     const g = { today: [], yesterday: [], 'this-week': [], older: [] };
-    visible.forEach(it => { g[inboxDateBucket(it.timestamp, now)].push(it); });
+    filtered.forEach(c => { g[inboxDateBucket(c.latestTs, now)].push(c); });
     return g;
-  }, [visible]);
+  }, [filtered]);
+
+  const selectedConv = selectedSlug ? convCache[selectedSlug] : null;
 
   return (
     <div className="inbox-page">
       <div className="inbox-header">
         <div>
           <div className="overview-kicker mono">Inbox</div>
-          <h1>Incoming work</h1>
-          <p>Slack DMs, GitHub PR reviews, and other external events routed into each task&apos;s <code>inbox.jsonl</code>. Click a row to open the task.</p>
+          <h1>Conversations</h1>
+          <p>Slack threads and GitHub PR activity routed into your tasks. Open a conversation to read its messages, then jump into the live terminal or spawn an agent.</p>
         </div>
         <div style={{display: 'flex', gap: 6}}>
-          <button className="btn sm" onClick={() => setReloadTick(t => t + 1)} title="Refresh inbox feed">
-            <Icon name="refresh-cw" size={12}/>refresh
-          </button>
+          <button className="btn sm" onClick={() => setReloadTick(t => t + 1)} title="Refresh inbox"><Icon name="refresh-cw" size={12}/>refresh</button>
         </div>
       </div>
 
@@ -1219,158 +1322,73 @@ const InboxView = ({ action, goto }) => {
 
       <div className="action-bar">
         <div className="filter-group">
-          <span className="filter-label">unread</span>
-          <button
-            className={`btn sm ${unreadOnly ? 'primary' : ''}`}
-            onClick={() => setUnreadOnly(v => !v)}
-            title="Show only unread inbox entries"
-          >
-            <Icon name="inbox" size={10}/>unread only
-            <span className="mono" style={{marginLeft: 4, opacity: 0.7}}>{feed.unread_count}</span>
+          <button className={`btn sm ${unreadOnly ? 'primary' : ''}`} onClick={() => setUnreadOnly(v => !v)} title="Only conversations with unread items">
+            <Icon name="inbox" size={10}/>unread<span className="mono" style={{marginLeft: 4, opacity: 0.7}}>{feed.unread_count}</span>
           </button>
         </div>
         <div className="filter-group">
           <span className="filter-label">project</span>
-          <select
-            className="form-input mono"
-            style={{padding: '4px 6px', fontSize: 11, minWidth: 140}}
-            value={projectSel}
-            onChange={e => setProjectSel(e.target.value)}
-          >
+          <select className="form-input mono" style={{padding: '4px 6px', fontSize: 11, minWidth: 140}} value={projectSel} onChange={e => setProjectSel(e.target.value)}>
             <option value="all">all projects</option>
             <option value="__floating">(floating)</option>
             {allProjects.map(p => <option key={p} value={p}>{p}</option>)}
           </select>
         </div>
         <div className="filter-group">
-          <span className="filter-label">task</span>
-          <select
-            className="form-input mono"
-            style={{padding: '4px 6px', fontSize: 11, minWidth: 180}}
-            value={taskSel}
-            onChange={e => setTaskSel(e.target.value)}
-          >
-            <option value="all">all tasks</option>
-            {allTasks.map(([slug, name]) => (
-              <option key={slug} value={slug}>{slug}{name && name !== slug ? ` — ${name.length > 40 ? name.slice(0, 40) + '…' : name}` : ''}</option>
-            ))}
-          </select>
-        </div>
-        <div className="filter-group">
-          <span className="filter-label">received</span>
-          {[
-            { id: 'all', label: 'all' },
-            { id: '24h', label: '24h' },
-            { id: '7d',  label: '7d' },
-            { id: '30d', label: '30d' },
-          ].map(opt => (
-            <button
-              key={opt.id}
-              className={`btn sm ${recent === opt.id ? 'primary' : ''}`}
-              onClick={() => setRecent(opt.id)}
-              title={opt.id === 'all' ? 'No age filter' : `Items received in the last ${opt.label}`}
-            >{opt.label}</button>
+          <span className="filter-label">active</span>
+          {[{id: 'all', label: 'all'}, {id: '24h', label: '24h'}, {id: '7d', label: '7d'}, {id: '30d', label: '30d'}].map(opt => (
+            <button key={opt.id} className={`btn sm ${recent === opt.id ? 'primary' : ''}`} onClick={() => setRecent(opt.id)} title={opt.id === 'all' ? 'No age filter' : `Active in the last ${opt.label}`}>{opt.label}</button>
           ))}
         </div>
-        {allSenders.length > 0 && (
-          <div className="filter-group">
-            <TagFilter
-              tags={allSenders}
-              selected={senderSel}
-              onToggle={toggleSender}
-              onClear={() => setSenderSel(new Set())}
-            />
-          </div>
-        )}
         <div className="filter-group">
           <span className="filter-label">sort</span>
-          <button
-            className="btn sm"
-            onClick={() => setSortDir(d => d === 'desc' ? 'asc' : 'desc')}
-            title={sortDir === 'desc' ? 'Newest first — click to flip' : 'Oldest first — click to flip'}
-          >
-            <Icon name={sortDir === 'desc' ? 'chevron-down' : 'chevron-up'} size={10}/>
-            {sortDir === 'desc' ? 'newest' : 'oldest'}
+          <button className="btn sm" onClick={() => setSortDir(d => d === 'desc' ? 'asc' : 'desc')} title={sortDir === 'desc' ? 'Most recent first — click to flip' : 'Oldest first — click to flip'}>
+            <Icon name={sortDir === 'desc' ? 'chevron-down' : 'chevron-up'} size={10}/>{sortDir === 'desc' ? 'newest' : 'oldest'}
           </button>
         </div>
-        <div className="filter-group" style={{borderRight: 'none'}}>
-          <button className="btn sm" onClick={expandAllBuckets} title="Expand all date groups"><Icon name="chevron-down" size={10}/>expand all</button>
-          <button className="btn sm" onClick={collapseAllBuckets} title="Collapse all date groups"><Icon name="chevron-right" size={10}/>collapse all</button>
-        </div>
-        <input
-          className="form-input mono"
-          style={{padding: '4px 8px', fontSize: 11, minWidth: 200}}
-          placeholder="search task, sender, body…"
-          value={search}
-          onChange={e => setSearch(e.target.value)}
-        />
-        <div className="mono right-meta">
-          {filtered.length} of {items.length}
-          {feed.task_count > 0 && <span style={{marginLeft: 8}}>· {feed.task_count} task{feed.task_count === 1 ? '' : 's'}</span>}
-        </div>
+        <input className="form-input mono" style={{padding: '4px 8px', fontSize: 11, minWidth: 200}} placeholder="search conversation or message…" value={search} onChange={e => setSearch(e.target.value)}/>
+        <div className="mono right-meta">{filtered.length} of {conversations.length} convo{conversations.length === 1 ? '' : 's'}</div>
       </div>
 
-      <div className="inbox-list" style={{display: 'flex', flexDirection: 'column', gap: 14}}>
-        {loading && items.length === 0 ? (
-          <div className="mono" style={{padding: 24, textAlign: 'center', color: 'var(--text-dim)'}}>Loading inbox…</div>
-        ) : filtered.length === 0 ? (
-          <BrandEmpty
-            title={items.length === 0 ? 'No inbox entries yet' : 'No entries match'}
-            body={items.length === 0
-              ? 'Slack DMs and GitHub PR events are appended to each task’s inbox.jsonl as they arrive. Nothing has landed yet.'
-              : 'Adjust the filters above to see more entries.'}
-          />
-        ) : (
-          INBOX_BUCKETS.map(b => {
-            const bucketItems = buckets[b.id];
-            if (!bucketItems.length) return null;
-            const isCollapsed = collapsed.has(b.id);
-            return (
-              <div key={b.id} className="session-group" style={{margin: 0}}>
-                <div className="group-head" style={{cursor: 'pointer'}} onClick={() => toggleCollapsed(b.id)}>
-                  <Icon name={isCollapsed ? 'chevron-right' : 'chevron-down'} size={12}/>
-                  <Icon name={b.icon} size={12}/>
-                  <span className="group-title">{b.label}</span>
-                  <span className="group-count mono">{bucketItems.length}</span>
-                </div>
-                {!isCollapsed && (
-                  <div style={{display: 'flex', flexDirection: 'column', gap: 10}}>
-                    {bucketItems.map((item, idx) => (
-                      <InboxFeedRow key={`${item.task_slug}-${item.timestamp}-${idx}`} entry={item} goto={goto}/>
-                    ))}
+      <div className={`inbox-split${selectedSlug ? ' has-selection' : ''}`}>
+        <div className="inbox-conv-list">
+          {loading && conversations.length === 0 ? (
+            <div className="mono" style={{padding: 24, textAlign: 'center', color: 'var(--text-dim)'}}>Loading inbox…</div>
+          ) : filtered.length === 0 ? (
+            <BrandEmpty
+              compact
+              title={conversations.length === 0 ? 'No conversations yet' : 'No conversations match'}
+              body={conversations.length === 0
+                ? 'Slack threads and GitHub PR events land here as they arrive.'
+                : 'Adjust the filters above to see more.'}
+            />
+          ) : (
+            INBOX_BUCKETS.map(b => {
+              const bConvs = buckets[b.id];
+              if (!bConvs.length) return null;
+              const isCollapsed = collapsed.has(b.id);
+              return (
+                <div key={b.id} className="session-group" style={{margin: 0}}>
+                  <div className="group-head" style={{cursor: 'pointer'}} onClick={() => toggleCollapsed(b.id)}>
+                    <Icon name={isCollapsed ? 'chevron-right' : 'chevron-down'} size={12}/>
+                    <Icon name={b.icon} size={12}/>
+                    <span className="group-title">{b.label}</span>
+                    <span className="group-count mono">{bConvs.length}</span>
                   </div>
-                )}
-              </div>
-            );
-          })
-        )}
-      </div>
-
-      {filtered.length > 0 && (
-        <div className="action-bar" style={{marginTop: 8}}>
-          <div className="filter-group">
-            <span className="filter-label">per page</span>
-            {INBOX_PAGE_SIZES.map(sz => (
-              <button
-                key={sz}
-                className={`btn sm ${pageSize === sz ? 'primary' : ''}`}
-                onClick={() => setPageSize(sz)}
-              >{sz}</button>
-            ))}
-          </div>
-          <div className="filter-group" style={{borderRight: 'none'}}>
-            <button className="btn sm" disabled={safePage <= 1} onClick={() => setPage(p => Math.max(1, p - 1))}>
-              <Icon name="arrow-left" size={10}/>prev
-            </button>
-            <span className="mono" style={{fontSize: 11, color: 'var(--text-dim)', padding: '0 6px'}}>
-              {filtered.length === 0 ? '0–0' : `${pageStart + 1}–${pageEnd}`} / {filtered.length} · page {safePage} of {totalPages}
-            </span>
-            <button className="btn sm" disabled={safePage >= totalPages} onClick={() => setPage(p => Math.min(totalPages, p + 1))}>
-              next<Icon name="arrow-right" size={10}/>
-            </button>
-          </div>
+                  {!isCollapsed && (
+                    <div className="inbox-conv-rows">
+                      {bConvs.map(c => <InboxConvRow key={c.slug} conv={c} selected={c.slug === selectedSlug} onSelect={setSelectedSlug}/>)}
+                    </div>
+                  )}
+                </div>
+              );
+            })
+          )}
         </div>
-      )}
+        <div className="inbox-conv-detail">
+          <InboxConversationPane conv={selectedConv} loading={convLoading} error={convError} action={action} goto={goto} onBack={() => setSelectedSlug(null)}/>
+        </div>
+      </div>
     </div>
   );
 };

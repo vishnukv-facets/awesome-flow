@@ -1007,6 +1007,73 @@ button.readable-file-head:focus-visible { outline: 1px solid var(--primary); out
   .inbox-actions { grid-column: 2; justify-content: flex-start; min-width: 0; }
 }
 
+/* ── Inbox conversation view (master–detail) ───────────── */
+.inbox-split { display: flex; gap: 14px; align-items: stretch; height: calc(100vh - 252px); min-height: 440px; }
+.inbox-conv-list { flex: 0 0 340px; width: 340px; overflow-y: auto; display: flex; flex-direction: column; gap: 12px; padding-right: 2px; }
+.inbox-conv-detail { flex: 1 1 auto; min-width: 0; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); overflow: hidden; display: flex; flex-direction: column; }
+.inbox-conv-rows { display: flex; flex-direction: column; gap: 6px; }
+.inbox-conv { display: grid; grid-template-columns: 16px minmax(0, 1fr) auto; gap: 10px; align-items: center; width: 100%; text-align: left; padding: 10px 11px; border: 1px solid var(--border); border-radius: 6px; background: var(--surface); color: var(--text); cursor: pointer; font: inherit; transition: border-color 0.12s, background 0.12s; }
+.inbox-conv:hover { background: var(--surface-2); border-color: var(--border-strong); }
+.inbox-conv.is-selected { border-color: var(--accent); background: var(--surface-2); box-shadow: inset 2px 0 0 var(--accent); }
+.inbox-conv-rail { display: flex; align-items: center; justify-content: center; }
+.inbox-conv-main { min-width: 0; display: flex; flex-direction: column; gap: 4px; }
+.inbox-conv-top { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.inbox-conv-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text); font-size: 13px; font-weight: 500; }
+.inbox-conv.is-unread .inbox-conv-name { font-weight: 600; }
+.inbox-conv-sub { display: flex; align-items: center; gap: 6px; color: var(--text-dim); font-size: 11px; min-width: 0; flex-wrap: wrap; }
+.inbox-conv-dot { opacity: 0.5; }
+.inbox-conv-project { padding: 1px 6px; border: 1px solid var(--border); border-radius: 3px; background: var(--surface-2); color: var(--text-mid); font-size: 10px; max-width: 130px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.inbox-conv-project--link { cursor: pointer; }
+.inbox-conv-project--link:hover { border-color: var(--accent); color: var(--text); }
+.inbox-conv-badge { flex: 0 0 auto; min-width: 18px; height: 18px; padding: 0 5px; border-radius: 9px; background: var(--accent); color: #0a0a0d; font: 600 10px var(--mono); display: inline-flex; align-items: center; justify-content: center; }
+.inbox-live-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--running); box-shadow: 0 0 0 3px var(--running-dim); display: inline-block; }
+.inbox-unread-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--accent); display: inline-block; }
+.inbox-source-mark { vertical-align: middle; opacity: 0.9; border-radius: 2px; }
+/* detail pane */
+.inbox-detail { display: flex; flex-direction: column; height: 100%; min-height: 0; }
+.inbox-detail-empty { flex: 1; display: flex; align-items: center; justify-content: center; padding: 32px; color: var(--text-dim); text-align: center; }
+.inbox-detail-head { display: flex; align-items: flex-start; gap: 12px; padding: 14px 16px; border-bottom: 1px solid var(--border); background: var(--surface-2); }
+.inbox-detail-title { min-width: 0; flex: 1; }
+.inbox-detail-title h2 { margin: 0; font-size: 16px; line-height: 1.25; color: var(--text); overflow: hidden; text-overflow: ellipsis; }
+.inbox-detail-meta { display: flex; align-items: center; gap: 8px; margin-top: 6px; color: var(--text-dim); font-size: 11px; flex-wrap: wrap; }
+.inbox-detail-actions { display: flex; align-items: center; gap: 6px; flex: 0 0 auto; }
+.inbox-live-pill { display: inline-flex; align-items: center; gap: 5px; padding: 1px 7px; border-radius: 10px; background: var(--running-dim); color: var(--running); border: 1px solid rgba(46,182,114,0.35); font-size: 10px; }
+.inbox-thread { flex: 1; min-height: 0; overflow-y: auto; padding: 16px; display: flex; flex-direction: column; gap: 12px; }
+.inbox-msg { border: 1px solid var(--border); border-radius: 7px; background: var(--surface); padding: 11px 13px; }
+.inbox-msg--github { border-left: 2px solid #8b8cf8; }
+.inbox-msg--slack { border-left: 2px solid #5eead4; }
+.inbox-msg-head { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.inbox-msg-sender { color: var(--text); font-size: 12.5px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.inbox-msg-time { color: var(--text-faint); font-size: 10.5px; }
+.inbox-msg-link { margin-left: auto; display: inline-flex; align-items: center; gap: 4px; color: var(--text-dim); font-size: 10.5px; text-decoration: none; padding: 2px 6px; border: 1px solid var(--border); border-radius: 3px; }
+.inbox-msg-link:hover { color: var(--text); border-color: var(--accent); }
+.inbox-msg-kind { margin-top: 7px; color: var(--text-mid); font-size: 10px; text-transform: uppercase; letter-spacing: 0.05em; }
+.inbox-msg-body { margin-top: 7px; color: var(--text); font-size: 13px; line-height: 1.5; word-break: break-word; }
+/* Scope the shared markdown renderer down to chat-bubble proportions. */
+.inbox-msg-body .markdown-rendered { font-size: 13px; line-height: 1.55; color: var(--text); max-width: none; }
+.inbox-msg-body .markdown-rendered.empty { display: none; }
+.inbox-msg-body .markdown-rendered > :last-child { margin-bottom: 0; }
+.inbox-msg-body .markdown-rendered h1 { font-size: 16px; margin: 0 0 8px; }
+.inbox-msg-body .markdown-rendered h2 { font-size: 14px; margin: 14px 0 6px; padding-bottom: 0; border-bottom: none; }
+.inbox-msg-body .markdown-rendered h3 { font-size: 13px; margin: 12px 0 5px; padding-bottom: 0; border-bottom: none; }
+.inbox-msg-body .markdown-rendered h4 { font-size: 12.5px; margin: 10px 0 5px; }
+.inbox-msg-body .markdown-rendered p { margin: 0 0 8px; }
+.inbox-msg-body .markdown-rendered ul, .inbox-msg-body .markdown-rendered ol { margin: 0 0 8px; padding-left: 20px; }
+.inbox-msg-body .markdown-rendered li { margin: 3px 0; }
+.inbox-msg-body .markdown-rendered blockquote { margin: 8px 0; padding-left: 10px; border-left: 2px solid var(--border); color: var(--text-dim); }
+.inbox-msg-body .markdown-rendered pre { margin: 8px 0; padding: 9px 11px; background: var(--surface-2); border: 1px solid var(--border); border-radius: 5px; overflow-x: auto; }
+.inbox-msg-body .markdown-rendered pre code { padding: 0; background: none; font-size: 12px; }
+.inbox-msg-body .markdown-rendered hr { margin: 10px 0; border: none; border-top: 1px solid var(--border); }
+.inbox-back { display: none; }
+@media (max-width: 860px) {
+  .inbox-split { height: auto; min-height: 0; }
+  .inbox-conv-list { flex-basis: auto; width: 100%; }
+  .inbox-conv-detail { display: none; }
+  .inbox-split.has-selection .inbox-conv-list { display: none; }
+  .inbox-split.has-selection .inbox-conv-detail { display: flex; min-height: 60vh; }
+  .inbox-back { display: inline-flex; }
+}
+
 /* ── Tables ────────────────────────────────────────────── */
 .table { width: 100%; border-collapse: collapse; font-size: 12px; }
 .table thead th { text-align: left; padding: 8px 10px; font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--text-dim); border-bottom: 1px solid var(--border); font-weight: 500; background: var(--bg); position: sticky; top: 0; z-index: 1; }
@@ -1625,10 +1692,13 @@ const lifecycleNotificationIsStale = (n, agentByURL) => {
 // ── Notifications bell ─────────────────────────────────────────
 const NotificationsBell = ({ waitingCount, liveCount, goto, action, agents = [] }) => {
   const [open, setOpen] = useState(false);
+  const [liveOpen, setLiveOpen] = useState(false);
+  const [inboxFeed, setInboxFeed] = useState({ entries: [] });
   const ref = useRef(null);
 
   const monitor = window.MC.MONITOR || { notifications: [] };
 
+  // ── Existing monitor-driven notifications / events (unchanged) ──────────
   const agentByURL = new Map((agents || []).filter(a => a && a.slug).map(a => [`/session/${a.slug}`, a]));
   const visibleNotificationInputs = (monitor.notifications || [])
     .filter(n => n.status !== 'dismissed')
@@ -1672,16 +1742,34 @@ const NotificationsBell = ({ waitingCount, liveCount, goto, action, agents = [] 
     .map(key => ({ key, ...notificationSectionMeta[key], items: (key === 'events' ? events : notifs.filter(n => n.category === key)) }))
     .filter(section => section.items.length > 0);
 
-  // Badge count is intentionally restricted to ACTIONABLE categories
-  // (attention + notification) and excludes lifecycle / events. Two
-  // reasons: (1) lifecycle notifications (agent_start, subagent_stop,
-  // task_completed) are observability, not "things to do" — counting
-  // them inflates the badge with items the user has no affordance to
-  // dismiss from the inbox; (2) the dropdown still shows ALL four
-  // sections so the user retains visibility, just the topbar number
-  // reflects what's actually waiting on them. The inbox-list dismiss
-  // and mark-read actions then visibly move this number down.
-  const unreadCount = notifs.filter(n => n.unread && (n.category === 'attention' || n.category === 'notification')).length;
+  // ── Actionable + live, derived from the live agent set ──────────────────
+  const waitingItems = (agents || []).filter(a => a && a.status === 'waiting');
+  const liveItems = (agents || []).filter(a => a && a.status === 'running');
+
+  // ── Unread inbox conversations: poll /api/inbox so the badge + list stay
+  // current even before the popover is opened. Grouped by task, newest first.
+  useEffect(() => {
+    let cancelled = false;
+    const load = () => fetch('/api/inbox', { cache: 'no-store' })
+      .then(r => r.ok ? r.json() : { entries: [] })
+      .then(data => { if (!cancelled) setInboxFeed({ entries: Array.isArray(data.entries) ? data.entries : [] }); })
+      .catch(() => {});
+    load();
+    const timer = setInterval(load, 30000);
+    return () => { cancelled = true; clearInterval(timer); };
+  }, []);
+
+  const unreadConvos = useMemo(() => {
+    const map = new Map();
+    (inboxFeed.entries || []).forEach(e => {
+      if (!e.unread) return;
+      let c = map.get(e.task_slug);
+      if (!c) { c = { slug: e.task_slug, name: e.task_name || e.task_slug, source: e.source, count: 0, latestTs: '' }; map.set(e.task_slug, c); }
+      c.count += 1;
+      if (!c.latestTs || String(e.timestamp) > String(c.latestTs)) c.latestTs = e.timestamp;
+    });
+    return Array.from(map.values()).sort((a, b) => String(b.latestTs).localeCompare(String(a.latestTs)));
+  }, [inboxFeed]);
 
   useEffect(() => {
     if (!open) return;
@@ -1694,14 +1782,8 @@ const NotificationsBell = ({ waitingCount, liveCount, goto, action, agents = [] 
 
   const handleClick = (n) => {
     setOpen(false);
-    if (n.url && n.url.startsWith('/session/')) {
-      goto(n.url.replace(/^\/+/, ''));
-      return;
-    }
-    if (n.url && n.url.startsWith('/')) {
-      goto(n.url.replace(/^\/+/, ''));
-      return;
-    }
+    if (n.url && n.url.startsWith('/session/')) { goto(n.url.replace(/^\/+/, '')); return; }
+    if (n.url && n.url.startsWith('/')) { goto(n.url.replace(/^\/+/, '')); return; }
     if (n.slug) {
       const agent = AGENTS.find(a => a.slug === n.slug);
       if (agent) action('attach', agent);
@@ -1710,16 +1792,29 @@ const NotificationsBell = ({ waitingCount, liveCount, goto, action, agents = [] 
     }
     goto('inbox');
   };
+  const openAgent = (a) => {
+    setOpen(false);
+    const agent = AGENTS.find(x => x.slug === a.slug) || a;
+    if (agent && agent.slug) action('attach', agent);
+  };
+  const openInboxConvo = () => { setOpen(false); goto('inbox'); };
 
   const colorFor = (kind) => kind === 'approval' || kind === 'high' ? 'var(--waiting)' : kind === 'success' || kind === 'done' || kind === 'low' ? 'var(--running)' : kind === 'warning' || kind === 'medium' || kind === 'pr' ? 'var(--primary-hi)' : 'var(--text-mid)';
   const dismissableNotifs = notifs.filter(n => n.dismissable);
   const unreadNotifs = dismissableNotifs.filter(n => n.unread);
 
+  // Badge = things that actually need the user: waiting tasks + unread inbox
+  // conversations + actionable monitor notifications. Live sessions are
+  // observability and never inflate the badge.
+  const actionableMonitor = notifs.filter(n => n.unread && (n.category === 'attention' || n.category === 'notification')).length;
+  const badgeCount = waitingItems.length + unreadConvos.length + actionableMonitor;
+  const hasActionable = waitingItems.length > 0 || unreadConvos.length > 0 || sectionItems.length > 0;
+
   return (
     <div className="notif-wrap" ref={ref}>
       <button className="notif-bell" onClick={() => setOpen(v => !v)} aria-label="Notifications" title="Notifications">
         <Icon name="bell" size={14}/>
-        {unreadCount > 0 && <span className="notif-badge mono">{unreadCount}</span>}
+        {badgeCount > 0 && <span className="notif-badge mono">{badgeCount}</span>}
       </button>
       {open && (
         <div className="notif-pop">
@@ -1728,33 +1823,105 @@ const NotificationsBell = ({ waitingCount, liveCount, goto, action, agents = [] 
             <span className="mono" style={{marginLeft: 'auto', fontSize: 10.5, color: 'var(--text-faint)'}}>{liveCount} live · {waitingCount} waiting</span>
           </div>
           <div className="notif-list">
-            {sectionItems.length === 0 ? (
+            {!hasActionable && liveItems.length === 0 ? (
               <div className="notif-empty mono">all clear</div>
-            ) : sectionItems.map(section => (
-              <div key={section.key} className={`notif-section ${section.key}`}>
-                <div className="notif-section-head mono">
-                  <Icon name={section.icon} size={12}/>
-                  <span>{section.title}</span>
-                  <span className="count">{section.items.length}</span>
-                </div>
-                {section.items.map(n => (
-                  <div key={n.id} className={`notif-row ${n.unread ? 'unread' : ''} ${n.dismissable ? '' : 'event'}`} role={n.dismissable || n.url || n.slug ? 'button' : undefined} tabIndex={n.dismissable || n.url || n.slug ? 0 : -1} onClick={() => handleClick(n)} onKeyDown={(e) => { if (e.key === 'Enter') handleClick(n); }}>
-                    <span className="notif-row-dot" style={{background: colorFor(n.kind)}}></span>
-                    <span className="notif-row-ic" style={{color: colorFor(n.kind)}}><Icon name={n.icon} size={13}/></span>
-                    <div className="notif-row-body">
-                      <div className="notif-row-title">{n.title}</div>
-                      <div className="notif-row-sub mono">{n.sub}</div>
+            ) : (
+              <>
+                {!hasActionable && (
+                  <div className="notif-empty mono" style={{padding: '20px 0 8px'}}>Nothing needs you right now</div>
+                )}
+
+                {waitingItems.length > 0 && (
+                  <div className="notif-section attention">
+                    <div className="notif-section-head mono">
+                      <Icon name="alert-circle" size={12}/>
+                      <span>Waiting on you</span>
+                      <span className="count">{waitingItems.length}</span>
                     </div>
-                    <span className="notif-row-time mono">{n.time}</span>
-                    {n.dismissable && (
-                      <button className="notif-dismiss" title="Dismiss notification" aria-label={`Dismiss ${n.title}`} onClick={(e) => { e.stopPropagation(); action('notification-dismiss', { slug: n.id }); }}>
-                        <Icon name="x" size={12}/>
-                      </button>
-                    )}
+                    {waitingItems.map(a => (
+                      <div key={`w-${a.slug}`} className="notif-row unread" role="button" tabIndex={0} onClick={() => openAgent(a)} onKeyDown={(e) => { if (e.key === 'Enter') openAgent(a); }}>
+                        <span className="notif-row-dot" style={{background: 'var(--waiting)'}}></span>
+                        <span className="notif-row-ic" style={{color: 'var(--waiting)'}}><Icon name="bell" size={13}/></span>
+                        <div className="notif-row-body">
+                          <div className="notif-row-title">{a.name || a.slug}</div>
+                          <div className="notif-row-sub mono">{a.next_step || a.summary || 'waiting for your input'}</div>
+                        </div>
+                        <span className="notif-row-time mono">open</span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                {unreadConvos.length > 0 && (
+                  <div className="notif-section notification">
+                    <div className="notif-section-head mono">
+                      <Icon name="inbox" size={12}/>
+                      <span>Unread inbox</span>
+                      <span className="count">{unreadConvos.length}</span>
+                    </div>
+                    {unreadConvos.map(c => (
+                      <div key={`i-${c.slug}`} className="notif-row unread" role="button" tabIndex={0} onClick={openInboxConvo} onKeyDown={(e) => { if (e.key === 'Enter') openInboxConvo(); }}>
+                        <span className="notif-row-dot" style={{background: 'var(--accent)'}}></span>
+                        <span className="notif-row-ic" style={{color: 'var(--accent)'}}><Icon name={c.source === 'github' ? 'git-pull-request' : c.source === 'slack' ? 'message-square' : 'inbox'} size={13}/></span>
+                        <div className="notif-row-body">
+                          <div className="notif-row-title">{c.name}</div>
+                          <div className="notif-row-sub mono">{c.count} unread{c.source ? ` · ${c.source}` : ''}</div>
+                        </div>
+                        <span className="notif-row-time mono">{formatInboxTimeAgo(c.latestTs)}</span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                {sectionItems.map(section => (
+                  <div key={section.key} className={`notif-section ${section.key}`}>
+                    <div className="notif-section-head mono">
+                      <Icon name={section.icon} size={12}/>
+                      <span>{section.title}</span>
+                      <span className="count">{section.items.length}</span>
+                    </div>
+                    {section.items.map(n => (
+                      <div key={n.id} className={`notif-row ${n.unread ? 'unread' : ''} ${n.dismissable ? '' : 'event'}`} role={n.dismissable || n.url || n.slug ? 'button' : undefined} tabIndex={n.dismissable || n.url || n.slug ? 0 : -1} onClick={() => handleClick(n)} onKeyDown={(e) => { if (e.key === 'Enter') handleClick(n); }}>
+                        <span className="notif-row-dot" style={{background: colorFor(n.kind)}}></span>
+                        <span className="notif-row-ic" style={{color: colorFor(n.kind)}}><Icon name={n.icon} size={13}/></span>
+                        <div className="notif-row-body">
+                          <div className="notif-row-title">{n.title}</div>
+                          <div className="notif-row-sub mono">{n.sub}</div>
+                        </div>
+                        <span className="notif-row-time mono">{n.time}</span>
+                        {n.dismissable && (
+                          <button className="notif-dismiss" title="Dismiss notification" aria-label={`Dismiss ${n.title}`} onClick={(e) => { e.stopPropagation(); action('notification-dismiss', { slug: n.id }); }}>
+                            <Icon name="x" size={12}/>
+                          </button>
+                        )}
+                      </div>
+                    ))}
                   </div>
                 ))}
-              </div>
-            ))}
+
+                {liveItems.length > 0 && (
+                  <div className="notif-section lifecycle">
+                    <div className="notif-section-head mono" style={{cursor: 'pointer'}} onClick={() => setLiveOpen(v => !v)} role="button" tabIndex={0} onKeyDown={(e) => { if (e.key === 'Enter') setLiveOpen(v => !v); }}>
+                      <Icon name={liveOpen ? 'chevron-down' : 'chevron-right'} size={12}/>
+                      <Icon name="activity" size={12}/>
+                      <span>Live sessions</span>
+                      <span className="count">{liveItems.length}</span>
+                    </div>
+                    {liveOpen && liveItems.map(a => (
+                      <div key={`l-${a.slug}`} className="notif-row event" role="button" tabIndex={0} onClick={() => openAgent(a)} onKeyDown={(e) => { if (e.key === 'Enter') openAgent(a); }}>
+                        <span className="notif-row-dot" style={{background: 'var(--running)'}}></span>
+                        <span className="notif-row-ic" style={{color: 'var(--running)'}}><Icon name="bot" size={13}/></span>
+                        <div className="notif-row-body">
+                          <div className="notif-row-title">{a.name || a.slug}</div>
+                          <div className="notif-row-sub mono">{a.summary || 'running'}</div>
+                        </div>
+                        <span className="notif-row-time mono">live</span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </>
+            )}
           </div>
           <div className="notif-foot">
             <button className="btn sm" onClick={() => { action('notification-read-all', { notification_ids: unreadNotifs.map(n => n.id) }); }} disabled={!unreadNotifs.length} style={{flex: 1, justifyContent: 'center'}}>Mark all read</button>

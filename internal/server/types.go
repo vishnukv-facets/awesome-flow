@@ -25,6 +25,10 @@ type Server struct {
 	githubListener *monitor.GitHubListener
 	inboxMonitors  *inboxMonitorManager
 	dbWatcher      *dbWatcher
+	// nameResolver maps Slack user/channel IDs to display names for the
+	// Inbox UI, caching lookups across requests. Nil when no Slack token is
+	// configured; all of its methods are nil-safe.
+	nameResolver *monitor.SlackNameResolver
 }
 
 type HealthView struct {
@@ -161,6 +165,40 @@ type InboxFeedEntry struct {
 	Body        string  `json:"body"`
 	BodySnippet string  `json:"body_snippet"`
 	Unread      bool    `json:"unread"`
+	// Source is "slack" | "github" | "" — derived from the event, used by the
+	// grouped conversation list to show a source icon without re-parsing.
+	Source string `json:"source,omitempty"`
+	// Live reports whether the task's session is currently running, so the
+	// conversation list can show a live indicator. Matches TaskView.Live.
+	Live bool `json:"live"`
+}
+
+// InboxConversation is the GET /api/inbox/conversation?slug=<task> response:
+// one task's full thread of inbox events, with every Slack ID already
+// resolved to a human-readable name. Powers the Inbox right pane.
+type InboxConversation struct {
+	Slug        string                     `json:"slug"`
+	Name        string                     `json:"name"`
+	ProjectSlug *string                    `json:"project_slug,omitempty"`
+	Status      string                     `json:"status"`
+	Provider    string                     `json:"provider"`
+	Live        bool                       `json:"live"`
+	Source      string                     `json:"source"`                 // slack | github | mixed | ""
+	ChannelName string                     `json:"channel_name,omitempty"` // resolved; never a raw ID
+	Messages    []InboxConversationMessage `json:"messages"`               // chronological (oldest first)
+}
+
+// InboxConversationMessage is one rendered message in a conversation thread.
+// SenderName and Body are guaranteed free of raw Slack IDs.
+type InboxConversationMessage struct {
+	Source     string `json:"source"`      // slack | github
+	Kind       string `json:"kind"`        // message, app_mention, pr_review_comment, …
+	SenderName string `json:"sender_name"` // resolved display name or login; never a raw ID
+	Timestamp  string `json:"timestamp"`   // RFC3339 (enqueued_at) when available
+	Title      string `json:"title"`       // humanised kind, e.g. "PR review requested"
+	Body       string `json:"body"`        // message text with mentions/links cleaned
+	Permalink  string `json:"permalink,omitempty"`
+	Reaction   string `json:"reaction,omitempty"`
 }
 
 // InboxFeed is the GET /api/inbox response shape — a global aggregation of
