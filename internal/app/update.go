@@ -397,6 +397,31 @@ func cmdUpdateTask(args []string) int {
 			return 1
 		}
 		fmt.Printf("project → %s\n", p.Slug)
+
+		// project-workdir-bug fix: adopt the project's work_dir when the task
+		// is still sitting in its auto-created throwaway workspace and the
+		// caller didn't set an explicit --work-dir in this same command.
+		// Attaching a project should point execution at the real repo, not the
+		// clone (the symptom that bit the Raptor task). A deliberately-chosen
+		// work_dir is never clobbered — isAutoWorkspace gates that.
+		if absWorkDir == "" && strings.TrimSpace(p.WorkDir) != "" {
+			if root, rerr := flowRoot(); rerr == nil &&
+				isAutoWorkspace(root, task.WorkDir) &&
+				filepath.Clean(p.WorkDir) != filepath.Clean(task.WorkDir) {
+				if _, err := db.Exec(
+					`UPDATE tasks SET work_dir=?, updated_at=? WHERE slug=?`,
+					p.WorkDir, now, task.Slug,
+				); err != nil {
+					fmt.Fprintf(os.Stderr, "error: adopt project work_dir: %v\n", err)
+					return 1
+				}
+				fmt.Printf("work_dir → %s (adopted from project %q; was a throwaway workspace)\n", p.WorkDir, p.Slug)
+				if task.SessionID.Valid && task.SessionID.String != "" {
+					fmt.Printf("note: this task's existing session lives in the old workspace; reopen with `flow do %s --fresh` to start work in the project repo.\n", task.Slug)
+				}
+				task.WorkDir = p.WorkDir
+			}
+		}
 	}
 	if *clearProject {
 		if _, err := db.Exec(

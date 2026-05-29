@@ -162,7 +162,10 @@ func (d *Dispatcher) createSlackTask(ctx context.Context, decision ReactionDecis
 	projects, _ := listProjectChoices(d.DB)
 	brief := slackTaskBrief(decision, slug, name, projects, SelfUserIDs())
 	provider := ProviderForEmoji(decision.Reaction)
-	if err := spawnFlowTask(ctx, name, slug, brief, provider); err != nil {
+	// Slack reactions don't carry a repo, so there's nothing to auto-attach;
+	// the brief's project picker still lets the agent attach one (which now
+	// adopts the project work_dir, see cmdUpdateTask).
+	if err := spawnFlowTask(ctx, name, slug, brief, provider, ""); err != nil {
 		return "", err
 	}
 	if err := tagFlowTask(ctx, slug, "slack-reply"); err != nil {
@@ -551,8 +554,11 @@ func slackAutoOpenEnabled() bool {
 // spawnFlowTask shells out to `flow spawn` with --no-open. The provider
 // arg routes the new task to either Claude or Codex (mapped from the
 // Slack trigger emoji). Empty provider lets `flow spawn` apply its own
-// default. Package-level variable so tests can swap it.
-var spawnFlowTask = func(ctx context.Context, name, slug, brief, provider string) error {
+// default. A non-empty project attaches the new task to that project so it
+// inherits the project's work_dir (the real repo) instead of falling back
+// to a throwaway task workspace — see resolveProjectForRepo. Package-level
+// variable so tests can swap it.
+var spawnFlowTask = func(ctx context.Context, name, slug, brief, provider, project string) error {
 	args := []string{"spawn", name,
 		"--slug", slug,
 		"--priority", "high",
@@ -561,6 +567,9 @@ var spawnFlowTask = func(ctx context.Context, name, slug, brief, provider string
 	}
 	if p := strings.TrimSpace(provider); p != "" {
 		args = append(args, "--agent", p)
+	}
+	if pj := strings.TrimSpace(project); pj != "" {
+		args = append(args, "--project", pj)
 	}
 	cmd := exec.CommandContext(ctx, "flow", args...)
 	out, err := cmd.CombinedOutput()

@@ -4,6 +4,7 @@ import (
 	"flow/internal/flowdb"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -103,6 +104,87 @@ func TestCmdUpdateTaskBothFields(t *testing.T) {
 	}
 	if task.WorkDir != newDir {
 		t.Errorf("work_dir = %q, want %q", task.WorkDir, newDir)
+	}
+}
+
+// TestCmdUpdateTaskProjectAdoptsWorkspaceWorkDir pins the core
+// project-workdir-bug fix: attaching a project to a task whose work_dir is
+// still the auto-created throwaway workspace adopts the project's work_dir,
+// so subsequent `flow do` runs land in the real repo, not the clone.
+func TestCmdUpdateTaskProjectAdoptsWorkspaceWorkDir(t *testing.T) {
+	root := setupFlowRoot(t)
+	repo := filepath.Join(t.TempDir(), "proj-repo")
+	if rc := cmdAdd([]string{"project", "Demo Project", "--slug", "demo", "--work-dir", repo, "--mkdir"}); rc != 0 {
+		t.Fatalf("add project rc=%d", rc)
+	}
+	seedTask(t, "ut-adopt") // floating → work_dir is <root>/tasks/ut-adopt/workspace
+
+	db := openFlowDB(t)
+	before, _ := flowdb.GetTask(db, "ut-adopt")
+	wantWorkspace := filepath.Join(root, "tasks", "ut-adopt", "workspace")
+	if before.WorkDir != wantWorkspace {
+		t.Fatalf("precondition: work_dir = %q, want auto-workspace %q", before.WorkDir, wantWorkspace)
+	}
+
+	if rc := cmdUpdate([]string{"task", "ut-adopt", "--project", "demo"}); rc != 0 {
+		t.Fatalf("update rc=%d", rc)
+	}
+	proj, _ := flowdb.GetProject(db, "demo")
+	after, _ := flowdb.GetTask(db, "ut-adopt")
+	if after.WorkDir != proj.WorkDir {
+		t.Errorf("work_dir = %q, want adopted project work_dir %q", after.WorkDir, proj.WorkDir)
+	}
+	if !after.ProjectSlug.Valid || after.ProjectSlug.String != "demo" {
+		t.Errorf("project_slug = %v, want demo", after.ProjectSlug)
+	}
+}
+
+// TestCmdUpdateTaskProjectDoesNotOverrideExplicitWorkDir ensures a caller
+// who passes both --project and --work-dir keeps their explicit path: the
+// adoption only fills a gap, it never clobbers an intentional work_dir.
+func TestCmdUpdateTaskProjectDoesNotOverrideExplicitWorkDir(t *testing.T) {
+	setupFlowRoot(t)
+	repo := filepath.Join(t.TempDir(), "proj-repo")
+	if rc := cmdAdd([]string{"project", "Demo Project", "--slug", "demo", "--work-dir", repo, "--mkdir"}); rc != 0 {
+		t.Fatalf("add project rc=%d", rc)
+	}
+	seedTask(t, "ut-explicit")
+	explicit := filepath.Join(t.TempDir(), "explicit-dir")
+	if rc := cmdUpdate([]string{"task", "ut-explicit", "--project", "demo", "--work-dir", explicit, "--mkdir"}); rc != 0 {
+		t.Fatalf("update rc=%d", rc)
+	}
+	db := openFlowDB(t)
+	proj, _ := flowdb.GetProject(db, "demo")
+	after, _ := flowdb.GetTask(db, "ut-explicit")
+	if after.WorkDir == proj.WorkDir {
+		t.Errorf("explicit --work-dir was overridden by project adoption: %q", after.WorkDir)
+	}
+	if !strings.Contains(after.WorkDir, "explicit-dir") {
+		t.Errorf("work_dir = %q, want the explicit path", after.WorkDir)
+	}
+}
+
+// TestCmdUpdateTaskProjectKeepsDeliberateWorkDir ensures attaching a
+// project to a task that already points at a real (non-workspace) work_dir
+// does NOT relocate it — only auto-workspace paths are adopted.
+func TestCmdUpdateTaskProjectKeepsDeliberateWorkDir(t *testing.T) {
+	setupFlowRoot(t)
+	projRepo := filepath.Join(t.TempDir(), "proj-repo")
+	if rc := cmdAdd([]string{"project", "Demo", "--slug", "demo", "--work-dir", projRepo, "--mkdir"}); rc != 0 {
+		t.Fatalf("add project rc=%d", rc)
+	}
+	taskRepo := filepath.Join(t.TempDir(), "task-repo")
+	if rc := cmdAdd([]string{"task", "ut-keep", "--work-dir", taskRepo, "--mkdir"}); rc != 0 {
+		t.Fatalf("add task rc=%d", rc)
+	}
+	db := openFlowDB(t)
+	before, _ := flowdb.GetTask(db, "ut-keep")
+	if rc := cmdUpdate([]string{"task", "ut-keep", "--project", "demo"}); rc != 0 {
+		t.Fatalf("update rc=%d", rc)
+	}
+	after, _ := flowdb.GetTask(db, "ut-keep")
+	if after.WorkDir != before.WorkDir {
+		t.Errorf("deliberate work_dir changed: %q → %q", before.WorkDir, after.WorkDir)
 	}
 }
 

@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"net/url"
 	"os"
+	"path/filepath"
 	"strings"
 )
 
@@ -319,6 +320,39 @@ func cmdDo(args []string) int {
 	if cwd == "" {
 		fmt.Fprintf(os.Stderr, "error: task %q has no work_dir\n", task.Slug)
 		return 1
+	}
+
+	// project-workdir-bug self-heal: a project-attached task whose work_dir is
+	// still a flow auto throwaway workspace should run in the project's real
+	// repo, not the clone. We don't bulk-migrate old rows; we fix them lazily
+	// here, at open time. Only redirect when it's safe — if a prior session's
+	// transcript already lives in the workspace, relocating would make
+	// `claude --resume` look in the wrong place, so we warn instead of moving.
+	if project != nil && strings.TrimSpace(project.WorkDir) != "" {
+		if root, rerr := flowRoot(); rerr == nil &&
+			isAutoWorkspace(root, task.WorkDir) &&
+			filepath.Clean(project.WorkDir) != filepath.Clean(task.WorkDir) {
+			hasWorkspaceSession := provider == agents.ProviderClaude &&
+				task.SessionID.Valid && task.SessionID.String != "" &&
+				sessionJSONLExistsAt(task.WorkDir, task.SessionID.String)
+			if hasWorkspaceSession {
+				fmt.Fprintf(os.Stderr,
+					"warning: task %q is attached to project %q (repo %s) but its session lives in a throwaway workspace at %s.\n"+
+						"  edits here will NOT land in the project repo; reopen with `flow do %s --fresh` to start work in the repo.\n",
+					task.Slug, project.Slug, project.WorkDir, task.WorkDir, task.Slug)
+			} else {
+				if _, err := db.Exec(
+					`UPDATE tasks SET work_dir=?, updated_at=? WHERE slug=?`,
+					project.WorkDir, flowdb.NowISO(), task.Slug,
+				); err != nil {
+					fmt.Fprintf(os.Stderr, "error: redirect work_dir to project repo: %v\n", err)
+					return 1
+				}
+				fmt.Printf("Redirected work_dir to project %q repo: %s (was a throwaway workspace)\n", project.Slug, project.WorkDir)
+				task.WorkDir = project.WorkDir
+				cwd = task.WorkDir
+			}
+		}
 	}
 
 	// Honor "session lives at work_dir" when a session_id was bound via

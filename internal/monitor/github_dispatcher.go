@@ -8,7 +8,43 @@ import (
 	"strings"
 
 	"flow/internal/flowdb"
+	"flow/internal/ghref"
+	"flow/internal/workdirreg"
 )
+
+// resolveProjectForRepo returns the slug of the single active (non-archived)
+// project whose work_dir git origin remote points at the given owner/repo,
+// and ok=true. When zero OR more than one project matches, ok=false and the
+// caller falls back to the brief's manual project picker rather than guessing
+// — an ambiguous auto-attach is worse than asking. Package-level var so tests
+// can inject matches without standing up real git checkouts.
+var resolveProjectForRepo = func(db *sql.DB, repoKey string) (string, bool) {
+	repoKey = strings.ToLower(strings.TrimSpace(repoKey))
+	if db == nil || repoKey == "" {
+		return "", false
+	}
+	projects, err := flowdb.ListProjects(db, flowdb.ProjectFilter{IncludeArchived: false})
+	if err != nil {
+		return "", false
+	}
+	matched := ""
+	count := 0
+	for _, p := range projects {
+		if p == nil || strings.TrimSpace(p.WorkDir) == "" {
+			continue
+		}
+		slug, ok := ghref.RepoFromRemote(workdirreg.DetectGitRemote(p.WorkDir))
+		if !ok || slug != repoKey {
+			continue
+		}
+		matched = p.Slug
+		count++
+	}
+	if count == 1 {
+		return matched, true
+	}
+	return "", false
+}
 
 // GitHubDispatcher routes normalized GitHub events into flow tasks. It
 // mirrors Dispatcher for Slack but keeps GitHub-specific tags, briefs, and
@@ -169,9 +205,14 @@ func (d *GitHubDispatcher) createGitHubTask(ctx context.Context, ev GitHubEvent)
 	if slug == "" {
 		return "", fmt.Errorf("cannot derive github task slug")
 	}
+	// The GitHub event names the repo, so try to attach the task to the
+	// matching flow project up front — then it inherits the project's real
+	// work_dir instead of a throwaway workspace (project-workdir-bug). On an
+	// ambiguous or absent match we fall back to the brief's manual picker.
+	attached, _ := resolveProjectForRepo(d.DB, ev.RepoKey())
 	projects, _ := listProjectChoices(d.DB)
-	brief := githubTaskBrief(ev, slug, projects)
-	if err := spawnFlowTask(ctx, githubTaskName(ev), slug, brief, ProviderForGitHubLabels(ev.Labels)); err != nil {
+	brief := githubTaskBrief(ev, slug, projects, attached)
+	if err := spawnFlowTask(ctx, githubTaskName(ev), slug, brief, ProviderForGitHubLabels(ev.Labels), attached); err != nil {
 		return "", err
 	}
 	for _, tag := range []string{"github", ev.LinkTag()} {
@@ -266,15 +307,23 @@ func githubTaskName(ev GitHubEvent) string {
 	return fmt.Sprintf("%s %s#%d: %s", prefix, ev.RepoKey(), ev.Number, title)
 }
 
-func githubTaskBrief(ev GitHubEvent, slug string, projects []projectChoice) string {
+func githubTaskBrief(ev GitHubEvent, slug string, projects []projectChoice, attached string) string {
 	var b strings.Builder
 	title := strings.TrimSpace(ev.Title)
 	if title == "" {
 		title = githubTaskName(ev)
 	}
 	b.WriteString("# " + title + "\n\n")
-	b.WriteString("## First step — pick a project\n")
-	b.WriteString(renderGitHubProjectPicker(slug, projects))
+	if strings.TrimSpace(attached) != "" {
+		// Repo matched a flow project by git origin, so the task is already
+		// attached and runs in that project's real checkout — no manual pick.
+		fmt.Fprintf(&b, "## Project\nThis task is attached to project `%s` and runs in that project's "+
+			"repository — `flow show task` shows the work_dir and worktree. No project pick is needed; "+
+			"make any code changes in the project repo, not a throwaway workspace.\n", attached)
+	} else {
+		b.WriteString("## First step — pick a project\n")
+		b.WriteString(renderGitHubProjectPicker(slug, projects))
+	}
 	b.WriteString("\n## What\n")
 	if ev.IsIssue() {
 		fmt.Fprintf(&b, "Issue: %s#%d\n", ev.RepoKey(), ev.Number)

@@ -21,6 +21,7 @@ type spawnCall struct {
 	Slug     string
 	Brief    string
 	Provider string
+	Project  string
 }
 
 type tagCall struct {
@@ -43,10 +44,10 @@ func stubDispatcherIO(t *testing.T) (*[]spawnCall, *[]tagCall, *[]string, func()
 	origTag := tagFlowTask
 	origOpen := openSlackReplyTask
 
-	spawnFlowTask = func(_ context.Context, name, slug, brief, provider string) error {
+	spawnFlowTask = func(_ context.Context, name, slug, brief, provider, project string) error {
 		mu.Lock()
 		defer mu.Unlock()
-		spawns = append(spawns, spawnCall{Name: name, Slug: slug, Brief: brief, Provider: provider})
+		spawns = append(spawns, spawnCall{Name: name, Slug: slug, Brief: brief, Provider: provider, Project: project})
 		return nil
 	}
 	tagFlowTask = func(_ context.Context, slug, tag string) error {

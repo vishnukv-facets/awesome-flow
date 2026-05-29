@@ -2154,9 +2154,16 @@ When to use which flag:
   are rejected so updates don't get orphaned under hidden containers.
   Swap is silent (no confirmation), matching `--priority` /
   `--assignee` semantics — if the user said "attach to X", just do it.
-  On `flow update playbook`, the same flags re-project the playbook
-  for **future runs only**; existing `kind=playbook_run` rows keep
-  the `project_slug` they snapshotted at run time and are not
+  Attaching a project also **adopts the project's `work_dir`** when the
+  task is still sitting in its auto-created throwaway workspace
+  (`~/.flow/tasks/<slug>/workspace/`) and you didn't pass an explicit
+  `--work-dir` in the same command — so a project-attached task runs in
+  the real repo, not a clone. A deliberately-chosen `work_dir` is never
+  clobbered. (If the task already has a session in the old workspace, the
+  command prints a note: reopen with `flow do <slug> --fresh` to start in
+  the repo.) On `flow update playbook`, the same flags re-project the
+  playbook for **future runs only**; existing `kind=playbook_run` rows
+  keep the `project_slug` they snapshotted at run time and are not
   retroactively rewritten.
 
 There is **no** `--session-id` flag. The session_id is owned by
@@ -2348,7 +2355,13 @@ lists tags under the `tags:` line), follow this bootstrap:
 2. **Read your brief.** It is a snapshot of the PR/issue at task
    creation time: title, URL, author, labels, milestone, base/head refs,
    and the initial GitHub body. Treat it as initial context, not the
-   live source of truth.
+   live source of truth. If the PR/issue's repo matched a flow project
+   by git-origin remote, the task is **already attached to that project
+   and runs in its real checkout** (the brief has a `## Project` block
+   instead of a picker) — make code changes there, not in a workspace.
+   If the repo didn't match a unique project, the brief asks you to pick
+   one as your first step; once you do, attaching it adopts the project's
+   `work_dir` (see §4.16 `--project`).
 3. **Catch up on the inbox.** Read every line of
    `~/.flow/tasks/<your-slug>/inbox.jsonl` in order. Each line is a JSON
    object `{enqueued_at, event}` where `event.Kind` may include

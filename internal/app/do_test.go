@@ -8,6 +8,7 @@ import (
 	"flow/internal/spawner"
 	"io"
 	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"sync"
@@ -1159,5 +1160,49 @@ func TestCmdDoHereRefusesBlockedTask(t *testing.T) {
 	}
 	if task.Status != "backlog" || task.SessionID.Valid || task.SessionStarted.Valid {
 		t.Fatalf("blocked --here should not bind session: %+v", task)
+	}
+}
+
+// TestCmdDoRedirectsProjectAttachedWorkspaceTaskToRepo pins the cmdDo
+// self-heal for the project-workdir-bug: a project-attached task that is
+// still sitting in a throwaway workspace (e.g. one created before the fix,
+// or a Slack/GitHub task attached after the fact) is redirected to the
+// project's real repo at open time, and the worktree is created there —
+// not inside the clone.
+func TestCmdDoRedirectsProjectAttachedWorkspaceTaskToRepo(t *testing.T) {
+	root := setupFlowRoot(t)
+	stubITerm(t)
+	repo := initGitRepoForWorktreeTest(t)
+
+	if rc := cmdAdd([]string{"project", "Demo", "--slug", "demo", "--work-dir", repo}); rc != 0 {
+		t.Fatalf("add project rc=%d", rc)
+	}
+	// Floating task → auto-workspace work_dir.
+	seedTask(t, "stranded")
+	db := openFlowDB(t)
+	// Construct the bug state directly: project-attached but still pointing at
+	// the throwaway workspace. We bypass cmdUpdate (whose adoption logic would
+	// already fix this) so the test exercises cmdDo's lazy self-heal path for
+	// rows that slipped through before the fix landed.
+	if _, err := db.Exec(`UPDATE tasks SET project_slug='demo' WHERE slug='stranded'`); err != nil {
+		t.Fatalf("seed bug state: %v", err)
+	}
+	wantWorkspace := filepath.Join(root, "tasks", "stranded", "workspace")
+	if before, _ := flowdb.GetTask(db, "stranded"); before.WorkDir != wantWorkspace {
+		t.Fatalf("precondition: work_dir = %q, want auto-workspace %q", before.WorkDir, wantWorkspace)
+	}
+
+	if rc := cmdDo([]string{"stranded"}); rc != 0 {
+		t.Fatalf("do rc=%d", rc)
+	}
+
+	proj, _ := flowdb.GetProject(db, "demo")
+	after, _ := flowdb.GetTask(db, "stranded")
+	if after.WorkDir != proj.WorkDir {
+		t.Errorf("work_dir = %q, want redirected to project repo %q", after.WorkDir, proj.WorkDir)
+	}
+	wantWT := filepath.Join(repo, ".claude", "worktrees", "stranded")
+	if _, err := os.Stat(wantWT); err != nil {
+		t.Errorf("worktree dir missing after redirect: %v", err)
 	}
 }

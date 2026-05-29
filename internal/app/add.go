@@ -341,6 +341,23 @@ func resolveWorkDir(path string, create bool) (string, error) {
 	return abs, nil
 }
 
+// isAutoWorkspace reports whether workDir is a flow auto-created throwaway
+// task workspace — i.e. <flowRoot>/tasks/<slug>/workspace — as opposed to a
+// real repo or a path the user chose. Attaching a project to a task whose
+// work_dir is an auto-workspace adopts the project's work_dir (see
+// cmdUpdateTask and cmdDo); a deliberately-set path is always left alone.
+func isAutoWorkspace(root, workDir string) bool {
+	if root == "" || workDir == "" {
+		return false
+	}
+	clean := filepath.Clean(workDir)
+	if filepath.Base(clean) != "workspace" {
+		return false
+	}
+	// The parent of <slug> must be exactly <root>/tasks.
+	return filepath.Dir(filepath.Dir(clean)) == filepath.Join(root, "tasks")
+}
+
 // uniqueSlug returns base if no row with that slug exists in table;
 // otherwise appends -2, -3, ... until it finds an unused one.
 func uniqueSlug(db *sql.DB, table, base string) (string, error) {
