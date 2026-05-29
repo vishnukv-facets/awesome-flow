@@ -1006,7 +1006,7 @@ func TestPrepareTerminalLaunchResumesCodexSession(t *testing.T) {
 	if launch.Created || launch.Provider != "codex" || launch.SessionID != sessionID || launch.NeedsCapture {
 		t.Fatalf("codex resume launch = %+v", launch)
 	}
-	want := []string{"resume", "--include-non-interactive", "--no-alt-screen", "-C", workDir, "--add-dir", root, "--ask-for-approval", "never", "--sandbox", "workspace-write", sessionID}
+	want := []string{"resume", "--include-non-interactive", "--no-alt-screen", "-C", workDir, "--add-dir", root, "--ask-for-approval", "never", "--sandbox", "workspace-write", "-c", "sandbox_workspace_write.network_access=true", sessionID}
 	if strings.Join(launch.Args, "\x00") != strings.Join(want, "\x00") {
 		t.Fatalf("codex resume args = %#v, want %#v", launch.Args, want)
 	}

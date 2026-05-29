@@ -2,6 +2,7 @@ package server
 
 import (
 	"bytes"
+	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -384,7 +385,31 @@ func terminalEnv(flowRoot, commandPath string) []string {
 	} else if root := os.Getenv("FLOW_ROOT"); root != "" {
 		env = setEnvValue(env, "FLOW_ROOT", root)
 	}
+	// Make `gh` work inside sandboxed agent sessions. Codex's workspace-write
+	// sandbox can't read the macOS Keychain where `gh` stores its token, so
+	// `gh` fails to authenticate even with network enabled. Resolve the token
+	// here (in the server, outside any sandbox) and pass it via GH_TOKEN, which
+	// gh prefers over keychain/config. No-op if a token is already in the env
+	// or can't be resolved (e.g. gh not logged in).
+	if envValueLocal(env, "GH_TOKEN") == "" && envValueLocal(env, "GITHUB_TOKEN") == "" {
+		if tok := ghAuthToken(); tok != "" {
+			env = setEnvValue(env, "GH_TOKEN", tok)
+		}
+	}
 	return prependCommandDirToPath(env, commandPath)
+}
+
+// ghAuthToken resolves the gh CLI token from the server's environment (outside
+// any agent sandbox). Overridable in tests. Returns "" when gh is unavailable
+// or not logged in.
+var ghAuthToken = func() string {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, "gh", "auth", "token", "-h", "github.com").Output()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(out))
 }
 
 func terminalEnvWithHook(flowRoot, commandPath, hookURL string) []string {
@@ -411,7 +436,7 @@ func terminalEnvMap(flowRoot, commandPath, hookURL, slug, provider, permissionMo
 		"FLOW_SESSION_PROVIDER":     provider,
 		"FLOW_PERMISSION_MODE":      normalizedTerminalPermissionMode(permissionMode),
 	}
-	for _, key := range []string{"PATH", "FLOW_ROOT", "FLOW_HOOK_URL"} {
+	for _, key := range []string{"PATH", "FLOW_ROOT", "FLOW_HOOK_URL", "GH_TOKEN"} {
 		if value := envValueLocal(env, key); value != "" {
 			out[key] = value
 		}
@@ -1037,13 +1062,20 @@ func claudePermissionArgs(mode string) []string {
 }
 
 func codexPermissionArgs(mode string) []string {
+	// Codex's workspace-write sandbox blocks outbound network by default, which
+	// breaks tools flow tasks routinely need — `gh` (PR create/edit), `git
+	// push`, package installs — with "error connecting to api.github.com". Flip
+	// network on for the sandboxed modes. The sandbox is all-or-nothing here
+	// (Codex has no per-domain allowlist), so this enables full egress; `bypass`
+	// already runs unsandboxed.
+	const allowNetwork = "sandbox_workspace_write.network_access=true"
 	switch strings.TrimSpace(mode) {
 	case "auto":
-		return []string{"--ask-for-approval", "never", "--sandbox", "workspace-write"}
+		return []string{"--ask-for-approval", "never", "--sandbox", "workspace-write", "-c", allowNetwork}
 	case "bypass":
 		return []string{"--dangerously-bypass-approvals-and-sandbox"}
 	default:
-		return []string{"--ask-for-approval", "on-request", "--sandbox", "workspace-write"}
+		return []string{"--ask-for-approval", "on-request", "--sandbox", "workspace-write", "-c", allowNetwork}
 	}
 }
 
